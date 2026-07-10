@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arag-toc"
+version = "0.1.0"
+description = "Agentic RAG benchmark workflow for long-document FinanceBench experiments."
+requires-python = ">=3.10"
+dependencies = [
+  "docling>=2.0.0",
+  "haystack-ai>=2.0.0",
+  "litellm>=1.50.0",
+  "pydantic>=2.8.0",
+  "python-dotenv>=1.0.1",
+  "sentence-transformers>=5.0.0",
+  "pymupdf>=1.26.4",
+  "pypdf2>=3.0.1",
+  "sqlalchemy>=2.0.35",
+  "transformers>=5.8.1,<5.9.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "app_platform",
+  "analyzer_utils",
+  "data_models",
+  "eval",
+  "postprocessing",
+  "document_ingestion",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+]
