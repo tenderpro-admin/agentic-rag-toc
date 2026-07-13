@@ -17,7 +17,7 @@ From a fresh checkout:
 
 ```bash
 git clone <repo-url>
-cd arag-toc
+cd agentic-rag-toc
 uv sync --dev
 cp env_example.txt .env
 uv run python scripts/fetch_bench_data.py
@@ -144,6 +144,15 @@ uv run python -m eval.pageindex_bench --parallel 10
 ```
 
 The first PageIndex run builds a local workspace under `.benchmark_artifacts/pageindex/workspace`.
+
+## External Baselines
+
+Reproduction harnesses for the two external baselines evaluated in the paper live under `baselines/`:
+
+- [`baselines/arag/`](baselines/arag/README.md) — A-RAG (Du et al. 2026) on FinanceBench
+- [`baselines/bookrag/`](baselines/bookrag/README.md) — BookRAG on FinanceBench
+
+Both are judged with the same LLM judge as the PageIndex baseline, so `metrics/*.json` are directly comparable across systems. See each README for prerequisites (both require a SLURM GPU cluster for indexing/answering).
 
 ## Output Locations
 

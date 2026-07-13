@@ -1,12 +1,10 @@
 # BookRAG x FinanceBench pipeline parameters (mirrors the PageIndex DVC setup in
-# the arag-toc repo). index + answer run on WCSS (H100); judge stays FIXED to the
-# same model the PageIndex baseline is judged with so the two systems compare.
-# Official BookRAG local fleet: the answer/index LLM is Qwen3-8B-AWQ served on
-# the WCSS H100s (no OpenAI). Judge stays FIXED to the model the PageIndex
-# baseline is judged with so the two systems compare.
-answer_model: Qwen3-8B-AWQ
-judge_model: gpt-5-mini-2025-08-07
+# the arag-toc repo). index + answer run on WCSS (H100); the answer-model matrix
+# itself is defined in dvc.yaml (vars: answer_models). The judge is FIXED to the
+# model the PageIndex baseline is judged with (gpt-5.4-mini, via OpenAI) so the
+# two systems compare directly.
+judge_model: gpt-5.4-mini
 # FinanceBench doc_names to index+answer. `all` = full 84-doc / 150-question set,
 # or a space-separated list for a subset (e.g. "BOEING_2022_10K AMD_2022_10K").
-docs: BOEING_2022_10K
+docs: all
 parallel: 4

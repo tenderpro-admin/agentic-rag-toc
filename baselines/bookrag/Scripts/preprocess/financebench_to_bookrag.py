@@ -15,11 +15,25 @@ import os
 import uuid
 from pathlib import Path
 
+def _default_data_root() -> Path:
+    """FinanceBench data root: $FINANCEBENCH_DIR, else the sibling arag-toc checkout.
+
+    The FinanceBench PDFs + ground truth live in the arag-toc repo (fetched by its
+    own script). This BookRAG baseline sits at <parent>/agentic-rag-toc/baselines/
+    bookrag/..., so the default is the sibling <parent>/arag-toc. Override with
+    FINANCEBENCH_DIR or --data-root when the data lives elsewhere (e.g. the WCSS
+    cluster).
+    """
+    env = os.environ.get("FINANCEBENCH_DIR")
+    if env:
+        return Path(env)
+    repo_root = Path(__file__).resolve().parents[4]  # -> agentic-rag-toc
+    return repo_root.parent / "arag-toc"
+
+
 # FinanceBench data root: override via --data-root or FINANCEBENCH_DIR env
 # (portable across machines, e.g. Linux box vs macOS over SSH).
-DEFAULT_DATA_ROOT = Path(
-    os.environ.get("FINANCEBENCH_DIR", "/home/bukareszt/Downloads/aragtoc/arag-toc")
-)
+DEFAULT_DATA_ROOT = _default_data_root()
 
 # Stable namespace so a given doc_name always maps to the same uuid.
 NS = uuid.UUID("12345678-1234-5678-1234-567812345678")
@@ -48,6 +62,12 @@ def main() -> None:
     data_root = Path(args.data_root).expanduser()
     gt = data_root / "datasets/finance_bench/ground truth/financebench_open_source.jsonl"
     pdf_dir = data_root / "datasets/finance_bench/pdfs"
+    if not gt.exists():
+        raise FileNotFoundError(
+            f"FinanceBench ground truth not found at {gt}. Set FINANCEBENCH_DIR (or "
+            f"pass --data-root) to the checkout that holds datasets/finance_bench/ "
+            f"— the arag-toc repo fetches it."
+        )
 
     rows = [json.loads(line) for line in gt.read_text().splitlines() if line.strip()]
     wanted = {r["doc_name"] for r in rows} if use_all else set(args.docs)

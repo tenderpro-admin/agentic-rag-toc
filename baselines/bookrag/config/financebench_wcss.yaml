@@ -14,8 +14,8 @@
 #
 # API key is read from OPENAI_API_KEY (provider patch); never stored here.
 
-pdf_path: TODO   # set per-document by main.py from the dataset
-save_path: TODO  # set per-document by main.py (working_dir/doc_uuid)
+pdf_path: null   # set per-document by main.py from the dataset
+save_path: null  # set per-document by main.py (working_dir/doc_uuid)
 
 llm:
   model_name: gpt-4o-mini

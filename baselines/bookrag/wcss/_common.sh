@@ -28,7 +28,15 @@ conda activate "$CONDA_ENV"
 if [[ -f "$WORKDIR/.env" ]]; then
   set -a; . "$WORKDIR/.env"; set +a
 fi
-: "${OPENAI_API_KEY:?OPENAI_API_KEY missing — put it in $WORKDIR/.env}"
+# OpenAI is only needed when the run actually calls the cloud: an explicit
+# CLOUD_LLM=1 (answer-model ablation) or a config that isn't the all-local Qwen
+# fleet (financebench_wcss_local.yaml). The all-local index/rag path needs no key.
+NEEDS_OPENAI=0
+[[ "${CLOUD_LLM:-0}" == "1" ]] && NEEDS_OPENAI=1
+case "${CONFIG:-}" in "" | *local*) ;; *) NEEDS_OPENAI=1 ;; esac
+if [[ "$NEEDS_OPENAI" == "1" ]]; then
+  : "${OPENAI_API_KEY:?OPENAI_API_KEY missing — put it in $WORKDIR/.env (needed for the cloud LLM path)}"
+fi
 
 # --- caches ------------------------------------------------------------------
 # Ephemeral, per-job (avoids the shared-$HOME cache-corruption trap):
@@ -107,11 +115,13 @@ bookrag_run() {
     "${stage_args[@]}"
 
   # main.py logs some failures (e.g. dataset-not-found, reranker crash) yet still
-  # exits 0 — catch its own error-report file written during THIS run.
-  if find "$WORKDIR" -maxdepth 1 -name 'financebench-index_error*.txt' \
+  # exits 0 — catch its own error-report file written during THIS run. Both index
+  # (financebench-index_error*.txt) and rag (financebench-rag_error_split_*.txt)
+  # write these, so match either.
+  if find "$WORKDIR" -maxdepth 1 -name 'financebench-*_error*.txt' \
         -newer "$err_marker" 2>/dev/null | grep -q .; then
-    echo "ERROR: BookRAG wrote a fresh index error report:"
-    find "$WORKDIR" -maxdepth 1 -name 'financebench-index_error*.txt' -newer "$err_marker" \
+    echo "ERROR: BookRAG wrote a fresh error report:"
+    find "$WORKDIR" -maxdepth 1 -name 'financebench-*_error*.txt' -newer "$err_marker" \
       -exec tail -n 20 {} \;
     exit 1
   fi

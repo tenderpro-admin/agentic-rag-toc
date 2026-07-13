@@ -5,7 +5,7 @@
 #SBATCH --time=06:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --account=hpc-tkajdanowicz-1763478893
+# Account/partition: export SBATCH_ACCOUNT=<your-grant> (and optionally SBATCH_PARTITION) before submitting; sbatch reads them from the environment.
 # Build the FROZEN per-doc Qwen embedding index for all FinanceBench docs.
 # Embed-only (no graph/tree) -> fast. Idempotent: skips docs already indexed.
 set -euo pipefail

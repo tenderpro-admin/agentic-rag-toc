@@ -25,6 +25,10 @@ export HF_HOME="${HF_HOME:-$BOOKRAG/.cache/hf}"
 export TOKENIZERS_PARALLELISM=false
 
 # OpenAI key (answer models are cloud gpt-*). Reuse BookRAG's .env.
+if [ ! -f "$BOOKRAG/.env" ]; then
+  echo "missing $BOOKRAG/.env: create it with OPENAI_API_KEY=sk-... (set BOOKRAG to your BookRAG checkout)" >&2
+  exit 1
+fi
 set -a; . "$BOOKRAG/.env"; set +a
 export ARAG_API_KEY="${OPENAI_API_KEY:?OPENAI_API_KEY missing in $BOOKRAG/.env}"
 export ARAG_BASE_URL="${ARAG_BASE_URL:-https://api.openai.com/v1}"

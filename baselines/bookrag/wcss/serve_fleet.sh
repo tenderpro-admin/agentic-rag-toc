@@ -7,22 +7,26 @@
 # 'pipeline' backend and the gme vdb embedder loads in-process — both inside
 # main.py on GPU3. main.py sees all 4 GPUs; the servers are masked to one each.
 #
-#   GPU0 vLLM(container) Qwen3-8B-AWQ           :8003/v1   (LLM)
-#   GPU1 vLLM(container) Qwen2.5-VL-7B-Instruct :8000/v1   (VLM)
+#   GPU0 vLLM(container) Qwen3-8B-AWQ           :8003/v1   (LLM; skipped if CLOUD_LLM=1)
+#   GPU1 vLLM(container) Qwen2.5-VL-7B-Instruct :8000/v1   (VLM; optional)
 #   GPU2 vLLM(container) Qwen3-Embedding-0.6B   :8007/v1   (embed)
-#   GPU2 vLLM(container) Qwen3-Reranker-4B      :8011      (rerank -> /rerank)
-#   GPU3 main.py: MinerU pipeline (cuda:3) + gme-Qwen2-VL-2B (cuda:3)
+#   GPU3 main.py: MinerU pipeline (cuda:3) + Qwen3-Reranker-0.6B in-process (cuda:3)
+#   The reranker is NOT a vLLM server — it loads in-process from the model cache
+#   (see the "Reranker is NOT served by vLLM" note below), so there is no :8011.
 set -uo pipefail
 
 : "${WORKDIR:?WORKDIR must be set}"
 export CONFIG="${CONFIG:-config/financebench_wcss_local.yaml}"
 export COMMAND="${COMMAND:-index}"
 export STAGE="${STAGE:-all}"
-export HF_HUB_OFFLINE=0
-export TRANSFORMERS_OFFLINE=0
 
 source "$WORKDIR/wcss/_common.sh"
-# Keep MinerU + gme off the GPUs the vLLM servers own (0,1,2).
+# _common.sh sets `set -euo pipefail`; this script intentionally runs WITHOUT -e
+# (it captures rc=$? after bookrag_run / export below), so restore that here.
+set +e
+# _common.sh's offline defaults (HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE=1) stand:
+# GPU compute nodes are treated as offline and models are pre-cached.
+# Keep MinerU + reranker off the GPUs the vLLM servers own (0,1,2).
 export MINERU_DEVICE_MODE="cuda:3"
 
 # Local ModelScope paths for every fleet model (written by setup_fleet.sh). The
@@ -31,7 +35,9 @@ PATHS_ENV="$WORKDIR/wcss/fleet_paths.env"
 [[ -f "$PATHS_ENV" ]] || { echo "missing $PATHS_ENV — run wcss/setup_fleet.sh first"; exit 1; }
 # shellcheck disable=SC1090
 source "$PATHS_ENV"
-: "${LLM_PATH:?}" "${EMBED_PATH:?}" "${RERANK_PATH:?}"
+# Only LLM + embed are served by vLLM here; the reranker loads in-process from the
+# HF/modelscope cache (no RERANK_PATH needed).
+: "${LLM_PATH:?}" "${EMBED_PATH:?}"
 # VLM and gme are OPTIONAL. The big models (Qwen2.5-VL 16G, gme 5G, Reranker-4B 9G)
 # are flaky to fetch over the WCSS↔ModelScope link; FinanceBench 10-Ks are
 # text-heavy, so we run an all-cached small fleet (Qwen3-8B-AWQ + Qwen3-Embedding
@@ -67,9 +73,9 @@ if llm_override:  # cloud answer-model ablation: only the LLM changes
     import os
     llm = c.setdefault("llm", {})
     llm["model_name"] = llm_override
-    # Upstream BookRAG passes api_key verbatim (the `env`->OPENAI_API_KEY provider
-    # patch lives in our stash). Resolve it here so `api_key: env` isn't sent as a
-    # literal "env" -> 401. The patched config stays in $TMPDIR (tmpfs), never repo.
+    # upstream.patch already resolves `api_key: env` -> OPENAI_API_KEY in the
+    # providers; resolve it here too (defense-in-depth) so the fleet works even on
+    # an unpatched checkout. The patched config stays in $TMPDIR (tmpfs), never repo.
     if str(llm.get("api_key", "")).strip() in {"env", "EMPTY", ""}:
         key = os.environ.get("OPENAI_API_KEY")
         if not key:

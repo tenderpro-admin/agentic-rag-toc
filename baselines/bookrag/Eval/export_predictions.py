@@ -5,7 +5,7 @@ BookRAG writes per-document `final_results.json` (one entry per question, each t
 dataset row plus an `output` field) under <working_dir>/<doc_uuid>/. This collector
 flattens those into a single predictions JSON whose shape matches the PageIndex
 baseline runner (eval/pageindex_bench.py in the arag-toc repo), so the *identical*
-LLM judge (eval/judge_predictions.py, gpt-5-mini) can grade BookRAG and PageIndex
+LLM judge (eval/judge_predictions.py, gpt-5.4-mini) can grade BookRAG and PageIndex
 the same way — an honest, apples-to-apples FinanceBench comparison.
 
 Predictions-only: this never judges. Scoring is a separate stage.
@@ -27,6 +27,10 @@ STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 TOKEN_INPUT = "input_tokens"
 TOKEN_OUTPUT = "output_tokens"
+# The frozen BookIndex is ALWAYS built by the local Qwen fleet (index_local.slurm /
+# serve_fleet.sh); only the answering LLM varies across the ablation. Label the
+# index with the builder, not the answer model.
+DEFAULT_INDEX_MODEL = "Qwen3-8B-AWQ"
 
 
 def _prediction_from_entry(entry: dict) -> dict:
@@ -89,17 +93,71 @@ def _collect(runs_dir: Path) -> tuple[list[dict], dict]:
     return results, cost
 
 
+def _validate_counts(results: list[dict], dataset_path: Path) -> list[str]:
+    """Check every processed doc produced one prediction per dataset question.
+
+    Only docs actually present in `results` are checked (subset runs are fine);
+    for each, the prediction count must equal the dataset's question count for
+    that doc. Returns a list of human-readable problems (empty == all good).
+    """
+    dataset = json.loads(dataset_path.read_text())
+    expected_ids: dict[str, set] = {}
+    for row in dataset:
+        doc = row.get("doc_name", "")
+        expected_ids.setdefault(doc, set()).add(row.get("financebench_id", ""))
+    got_ids: dict[str, set] = {}
+    for r in results:
+        got_ids.setdefault(r.get("doc_name") or "", set()).add(r.get("test_id", ""))
+
+    problems: list[str] = []
+    for doc, got in sorted(got_ids.items()):
+        expected = expected_ids.get(doc)
+        if expected is None:
+            problems.append(f"{doc}: {len(got)} predictions but doc not in dataset")
+            continue
+        missing = expected - got
+        if missing or len(got) != len(expected):
+            problems.append(
+                f"{doc}: {len(got)}/{len(expected)} predictions, "
+                f"missing {len(missing)} question(s): {sorted(missing)}"
+            )
+    return problems
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Export BookRAG outputs to predictions JSON")
     ap.add_argument("--runs-dir", required=True, help="BookRAG working_dir (holds <doc_uuid>/ dirs)")
     ap.add_argument("--model", required=True, help="Answer model label, e.g. gpt-4o-mini")
     ap.add_argument("--out", required=True, help="Output predictions JSON path")
+    ap.add_argument(
+        "--dataset",
+        default="datasets/financebench.json",
+        help="BookRAG dataset JSON; used to verify one prediction per question "
+        "for every processed doc (validation skipped if the file is absent).",
+    )
+    ap.add_argument(
+        "--index-model",
+        default=DEFAULT_INDEX_MODEL,
+        help=f"Model that BUILT the frozen index (default {DEFAULT_INDEX_MODEL}); "
+        "distinct from --model, which only answers.",
+    )
     args = ap.parse_args()
 
     runs_dir = Path(args.runs_dir).expanduser()
     results, cost = _collect(runs_dir)
     if not results:
         raise SystemExit(f"No final_results.json found under {runs_dir} — run RAG first")
+
+    dataset_path = Path(args.dataset).expanduser()
+    if dataset_path.exists():
+        problems = _validate_counts(results, dataset_path)
+        if problems:
+            raise SystemExit(
+                "Prediction count does not match the dataset for the processed docs:\n  "
+                + "\n  ".join(problems)
+            )
+    else:
+        print(f"WARNING: dataset {dataset_path} not found — skipping count validation")
 
     completed = [r for r in results if r["status"] == STATUS_COMPLETED]
     # Dollar cost via litellm's price map for the answer model — same source the
@@ -129,7 +187,7 @@ def main() -> None:
         "method": "bookrag",
         "model": args.model,
         "answer_model": args.model,
-        "index_model": args.model,
+        "index_model": args.index_model,
         "benchmark_source": "financebench",
         "total_cases": len(results),
         "completed": len(completed),

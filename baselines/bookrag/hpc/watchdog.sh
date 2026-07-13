@@ -1,7 +1,13 @@
 #!/bin/bash
-# Login-node watchdog — every INTERVAL, kill all $USER processes on the login
-# node except self, ancestors, and systemd user-instance. Clears zombie
-# bash/find/rsync/ssh from timed-out sessions that exhaust the shell quota.
+# Login-node watchdog — every INTERVAL, reap leftover zombie processes from
+# timed-out sessions (bash/find/rsync/ssh) that exhaust the per-user shell quota.
+#
+# SCOPE / HAZARD: this reaps ONLY the allowlisted command types below (see
+# sweep()), never "every non-ancestor process". A blanket sweep would also kill
+# sbatch/squeue, python jobs, and a live sshd session driving an in-flight
+# wcss/run_remote.sh poll. Even within the allowlist a bash/ssh/rsync belonging to
+# an ACTIVE session can match, so keep INTERVAL coarse and prefer running this only
+# when no run_remote poll is in flight.
 INTERVAL="${WATCHDOG_INTERVAL:-300}"
 SELF=$$
 get_ancestors() {
@@ -21,7 +27,13 @@ sweep() {
         [ -z "$pid" ] && continue
         skip=0; for anc in $ANCESTORS; do [ "$pid" = "$anc" ] && skip=1 && break; done
         [ $skip -eq 1 ] && continue
-        case "$comm" in systemd|"(sd-pam)"|sshd|watchdog.sh) continue ;; esac
+        # ALLOWLIST: only reap the zombie command types this watchdog exists for.
+        # Everything else (sbatch, squeue, python, sshd, systemd, ...) is left
+        # alone so a running job or a live run_remote poll is never collateral.
+        case "$comm" in
+            bash|find|rsync|ssh|scp|sftp-server) ;;
+            *) continue ;;
+        esac
         kill -9 "$pid" 2>/dev/null && KILLED=$((KILLED+1))
     done < <(ps -u "$USER" -o pid=,comm= --no-headers)
     echo "$(date -Iseconds) sweep killed=$KILLED"

@@ -41,9 +41,11 @@ PY
 # Small, reliable models first so the core RAG fleet is ready fast; the big VLM
 # (16 GB, flaky on the WCSS↔ModelScope link) goes LAST so a VLM stall can't block
 # the others. serve_fleet.sh runs VLM-optional, so a missing VLM_PATH still works.
+# The reranker (Qwen3-Reranker-0.6B) is NOT fetched here: it loads in-process from
+# the HF cache pre-populated by wcss/setup_env.sh, so no vLLM rerank server (or the
+# 9 GB Reranker-4B) is needed.
 download LLM_PATH    "Qwen/Qwen3-8B-AWQ"
 download EMBED_PATH  "Qwen/Qwen3-Embedding-0.6B"
-download RERANK_PATH "Qwen/Qwen3-Reranker-4B"
 download GME_PATH    "iic/gme-Qwen2-VL-2B-Instruct"
 download VLM_PATH    "Qwen/Qwen2.5-VL-7B-Instruct" || echo "WARN: VLM download failed; fleet runs VLM-optional"
 

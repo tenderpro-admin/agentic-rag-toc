@@ -1,17 +1,19 @@
 #!/bin/bash
 # Local driver: run a BookRAG SLURM job on WCSS and bring the artifacts back.
 #
-#   push (rsync) -> sbatch --wait (blocks until the job finishes) -> pull (rsync)
+#   push (rsync) -> sbatch --parsable + poll (squeue/sacct) -> pull (rsync)
 #
-# Designed to be the command behind a DVC stage: it is synchronous (sbatch --wait)
-# and its exit code is the job's exit code, so `dvc repro` fails if the job fails.
+# Designed to be the command behind a DVC stage: it submits the job, then POLLS
+# until it finishes and exits with the job's final state, so `dvc repro` fails if
+# the job fails. Polling (not `sbatch --wait`) keeps a single congested login-node
+# ssh from wedging the run — every remote op is short and retried.
 #
 # Usage:
 #   wcss/run_remote.sh index            # build the frozen BookIndex on the H100
 #   wcss/run_remote.sh rag              # answer + export predictions on the H100
 #
 # Env (override as needed):
-#   WCSS_HOST     ssh target            (default <your-login>@ui.wcss.pl)
+#   WCSS_HOST     ssh target            (required, e.g. <login>@ui.wcss.pl)
 #   WCSS_REMOTE   remote checkout path  (default projects/BookRAG, relative to $HOME)
 #   NUM,NSPLIT    BookRAG split control (default 1 / 1)
 #   ANSWER_MODEL  label for rag export  (default gpt-4o-mini)
@@ -22,7 +24,7 @@ set -euo pipefail
 CMD="${1:?usage: run_remote.sh <index|rag>}"
 case "$CMD" in index|rag) ;; *) echo "command must be index|rag"; exit 2;; esac
 
-WCSS_HOST="${WCSS_HOST:-<your-login>@ui.wcss.pl}"
+: "${WCSS_HOST:?set WCSS_HOST=<login>@ui.wcss.pl}"
 WCSS_REMOTE="${WCSS_REMOTE:-projects/BookRAG}"   # relative to remote $HOME
 FINANCEBENCH_DIR="${FINANCEBENCH_DIR:-\$HOME/finance_bench_root}"  # remote data root
 DOCS="${DOCS:-all}"                              # FinanceBench docs to index
@@ -53,13 +55,19 @@ fi
 SSH_OPTS="-o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o BatchMode=yes"
 
 ssh_r() {  # retryable ssh; prints remote stdout, returns 0 on success
-  local t out
+  local t out err
+  err="$(mktemp "${TMPDIR:-/tmp}/ssh_r.XXXXXX")"
   for t in 1 2 3 4 5 6 7 8; do
-    if out=$(timeout 90 ssh $SSH_OPTS "$WCSS_HOST" "$1" 2>/dev/null); then
-      printf '%s' "$out"; return 0
+    # Capture remote stderr rather than discarding it, so a persistent remote
+    # failure (bad path, quota, auth) is visible once retries are exhausted.
+    if out=$(timeout 90 ssh $SSH_OPTS "$WCSS_HOST" "$1" 2>"$err"); then
+      printf '%s' "$out"; rm -f "$err"; return 0
     fi
     sleep 20
   done
+  echo ">> ssh_r exhausted retries for: $1" >&2
+  [[ -s "$err" ]] && { echo ">> last remote stderr:" >&2; cat "$err" >&2; }
+  rm -f "$err"
   return 1
 }
 rsync_r() {  # retryable rsync ($@ = rsync args after -e)
@@ -98,16 +106,34 @@ if [[ "$CMD" == "rag" ]]; then
 fi
 
 echo ">> [2/3] submit $SLURM_FILE, then poll (resilient to login congestion)"
-JID=$(ssh_r "cd ~/$WCSS_REMOTE && sbatch --parsable ${SBATCH_FLAGS[*]} --export=$EXPORTS $SLURM_FILE")
+# Empty-safe (set -u), remote-shell-quoted sbatch flags. EXPORTS is left unquoted
+# on purpose: it embeds a literal \$HOME meant to expand on the REMOTE shell.
+FLAGS_STR=""
+if [[ ${#SBATCH_FLAGS[@]} -gt 0 ]]; then
+  FLAGS_STR="$(printf '%q ' "${SBATCH_FLAGS[@]}")"
+fi
+JID=$(ssh_r "cd ~/$WCSS_REMOTE && sbatch --parsable ${FLAGS_STR}--export=$EXPORTS $SLURM_FILE")
 [[ -n "$JID" ]] || { echo "submit failed"; exit 1; }
 echo ">> submitted job $JID — polling"
+STATE=""
 while true; do
-  st=$(ssh_r "squeue -j $JID -h -o '%T' 2>/dev/null"); pc=$?
-  [[ $pc -ne 0 ]] && { sleep 20; continue; }   # ssh failed — retry, don't exit
-  [[ -z "$st" ]] && break                        # gone from queue -> finished
-  sleep 30
+  # Guard the assignment so ssh failure (rc!=0) does NOT trip set -e; only an
+  # actually-empty squeue on a SUCCESSFUL ssh means the job left the queue.
+  # `|| true` on the REMOTE side: squeue exits nonzero for a job already purged
+  # from the queue (MinJobAge), which must read as "gone" — not as ssh failure.
+  if st=$(ssh_r "squeue -j $JID -h -o '%T' 2>/dev/null || true"); then
+    if [[ -z "$st" ]]; then
+      # Gone from squeue == finished OR purged (MinJobAge). squeue emptiness can't
+      # tell those apart, so confirm the final state via sacct before concluding.
+      STATE=$(ssh_r "sacct -j $JID -n -o State | head -1 | tr -d ' '" || true)
+      [[ -n "$STATE" ]] && break
+      sleep 20; continue   # sacct not yet populated — re-poll, don't assume done
+    fi
+    sleep 30
+  else
+    sleep 20   # ssh failed — retry, don't exit
+  fi
 done
-STATE=$(ssh_r "sacct -j $JID -n -o State 2>/dev/null | head -1 | tr -d ' '")
 echo ">> job $JID finished: ${STATE:-UNKNOWN}"
 RC=0; [[ "$STATE" == COMPLETED* ]] || RC=1
 
@@ -120,5 +146,4 @@ rsync_r --include='bookrag-*.out' --include='bookrag-*.err' --exclude='*' \
   "$WCSS_HOST:~/$WCSS_REMOTE/" "$HERE/wcss/logs/" || true
 
 echo ">> done (job $JID state=${STATE:-UNKNOWN} rc=$RC)"
-exit $RC
 exit $RC

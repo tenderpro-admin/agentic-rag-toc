@@ -35,14 +35,21 @@ from typing import Any
 # MinerU output dir). Do not change.
 NS = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
+# FinanceBench data root: FINANCEBENCH_DIR if set, else the sibling arag-toc
+# checkout (repo root is parents[3]; its sibling holds the dataset).
 DEFAULT_DATA_ROOT = Path(
-    os.environ.get("FINANCEBENCH_DIR", "/home/bukareszt/Downloads/aragtoc/arag-toc")
+    os.environ.get(
+        "FINANCEBENCH_DIR",
+        str(Path(__file__).resolve().parents[3].parent / "arag-toc"),
+    )
 )
 
-# Pack consecutive markdown blocks up to this many chars per passage. Tables are
-# never split or merged (kept as one passage — financial figures are atomic).
+GT_RELPATH = "datasets/finance_bench/ground truth/financebench_open_source.jsonl"
+
+# Pack consecutive markdown blocks up to this many chars per passage. MinerU
+# emits each table as a single line, so blank-line block splitting never splits a
+# table; financial figures stay atomic within one passage.
 PASSAGE_CHAR_BUDGET = 1500
-TABLE_RE = re.compile(r"<table[ >].*?</table>", re.IGNORECASE | re.DOTALL)
 
 
 def doc_uuid(doc_name: str) -> str:
@@ -120,7 +127,13 @@ def convert(
     data_root: Path,
 ) -> dict[str, Any]:
     """Build per-doc A-RAG corpus + questions. Returns a summary dict."""
-    gt = data_root / "datasets/finance_bench/ground truth/financebench_open_source.jsonl"
+    gt = data_root / GT_RELPATH
+    if not gt.exists():
+        raise FileNotFoundError(
+            f"FinanceBench ground truth not found at {gt}. Set FINANCEBENCH_DIR "
+            "(or pass --data-root) to the directory containing "
+            f"'{GT_RELPATH}'."
+        )
     rows = _load_rows(gt)
 
     by_doc: dict[str, list[dict[str, Any]]] = {}

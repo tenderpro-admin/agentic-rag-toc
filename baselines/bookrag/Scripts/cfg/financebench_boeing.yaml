@@ -1,4 +1,8 @@
-# Dataset config for the FinanceBench BOEING_2022_10K smoke run.
-dataset_path: ../datasets/financebench_boeing_smoke.json
-working_dir: ../runs/financebench
+# Dataset config for the FinanceBench BOEING_2022_10K smoke run. main.py resolves
+# these paths relative to the CWD (repo root). The smoke dataset is GENERATED (not
+# committed) by `make dataset DOCS=BOEING_2022_10K` — i.e.
+# Scripts/preprocess/financebench_to_bookrag.py writing into datasets/ (gitignored)
+# — before running the smoke.
+dataset_path: datasets/financebench_boeing_smoke.json
+working_dir: runs/financebench
 dataset_name: financebench
