@@ -1,0 +1,68 @@
+# BookRAG x FinanceBench DVC pipeline — mirrors arag-toc's PageIndex dvc.yaml.
+#
+# Like PageIndex, the INDEX IS NOT A STAGE: the BookIndex (MinerU parse -> tree ->
+# graph -> vdb) is built ONCE on WCSS (all-local Qwen fleet) and FROZEN on the
+# cluster at ~/projects/BookRAG/runs/financebench/<doc_uuid>/. Building it is a
+# one-off:  make wcss-index DOCS=...   (or: uv run dvc repro is NOT used for it).
+# Every matrix instance answers over that identical frozen index; the ONLY
+# variable is the answering LLM — an honest answer-model ablation.
+#
+#   answer@<model>  (WCSS: RAG over the frozen index -> predictions, pulled local)
+#       -> judge@<model>  (LOCAL arag-toc: the SAME gpt-5-mini judge as PageIndex)
+#
+# answer shells out to wcss/run_remote.sh rag, which rsyncs this checkout to the
+# cluster (so the force-fresh serve_fleet.sh lands), submits `sbatch --wait` (so
+# `dvc repro` blocks + fails on job failure), then rsyncs results/ back. DVC runs
+# the matrix stages SEQUENTIALLY, so the shared frozen-index dir is never raced
+# and each model truly re-answers (serve_fleet clears eval_*/ before each rag).
+#
+# Run:
+#   uv run dvc repro                                  # all answer models + judge
+#   uv run dvc repro judge@gpt-4o-2024-08-06          # one model end-to-end
+#   uv run dvc metrics show                           # compare metrics/bookrag_*
+
+vars:
+  - params.yaml
+  - answer_models:
+      - Qwen3-8B-AWQ
+      - gpt-5-mini-2025-08-07
+      - gpt-5-2025-08-07
+      - gpt-4.1-mini-2025-04-14
+      - gpt-4o-2024-08-06
+      - gpt-4o-mini-2024-07-18
+
+stages:
+  answer:
+    matrix:
+      model: ${answer_models}
+    cmd: >-
+      FLEET=local ANSWER_MODEL='${item.model}' DOCS='${docs}'
+      wcss/run_remote.sh rag
+    deps:
+      - wcss/run_remote.sh
+      - wcss/rag_local.slurm
+      - wcss/serve_fleet.sh
+      - wcss/_common.sh
+      - config/financebench_wcss_local.yaml
+      - config/financebench_wcss_gpt.yaml
+      - Eval/export_predictions.py
+      - Core
+    outs:
+      - results/financebench/bookrag/${item.model}/predictions.json:
+          cache: false
+
+  judge:
+    matrix:
+      model: ${answer_models}
+    cmd: >-
+      ANSWER_MODEL='${item.model}' JUDGE_MODEL='${judge_model}' PARALLEL='${parallel}'
+      wcss/judge_local.sh
+    params:
+      - judge_model
+      - parallel
+    deps:
+      - results/financebench/bookrag/${item.model}/predictions.json
+      - wcss/judge_local.sh
+    metrics:
+      - metrics/bookrag_${item.model}.json:
+          cache: false
