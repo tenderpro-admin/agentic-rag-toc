@@ -1,0 +1,46 @@
+schema: '2.0'
+stages:
+  answer@gpt-5-mini-2025-08-07:
+    cmd: FLEET=local ANSWER_MODEL='gpt-5-mini-2025-08-07' DOCS='BOEING_2022_10K'
+      wcss/run_remote.sh rag
+    deps:
+    - path: Core
+      hash: md5
+      md5: 4c944d912092b4ac9d5a2d2501b64a78.dir
+      size: 1350104
+      nfiles: 146
+    - path: Eval/export_predictions.py
+      hash: md5
+      md5: f251b36a4c75ef1c297cf70bac416a8b
+      size: 6632
+    - path: config/financebench_wcss_gpt.yaml
+      hash: md5
+      md5: 5548224a1c83a83e148f9aebc10ea052
+      size: 3224
+    - path: config/financebench_wcss_local.yaml
+      hash: md5
+      md5: bc97684662414208fb171676ebee4e4b
+      size: 2879
+    - path: wcss/_common.sh
+      hash: md5
+      md5: 37cc091abc4c3721a52163efa1aaee8f
+      size: 6078
+      isexec: true
+    - path: wcss/rag_local.slurm
+      hash: md5
+      md5: 63bbe866bd45bff3a97df86079ca22ee
+      size: 1060
+    - path: wcss/run_remote.sh
+      hash: md5
+      md5: ecbff8dd358b9e7f5496465a957a49ae
+      size: 4181
+      isexec: true
+    - path: wcss/serve_fleet.sh
+      hash: md5
+      md5: 8a8dbda2a60fcaaac46568dcdb91583e
+      size: 8879
+    outs:
+    - path: results/financebench/bookrag/gpt-5-mini-2025-08-07/predictions.json
+      hash: md5
+      md5: 5e94b9813eeaa53453aaeeeed05faa57
+      size: 59257

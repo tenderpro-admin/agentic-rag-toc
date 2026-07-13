@@ -1,0 +1,116 @@
+diff --git a/src/arag/agent/base.py b/src/arag/agent/base.py
+index 47d0e4a..7ef7bc8 100644
+--- a/src/arag/agent/base.py
++++ b/src/arag/agent/base.py
+@@ -40,20 +40,27 @@ class BaseAgent:
+     
+     def _force_final_answer(self, messages: List[Dict[str, Any]], context: AgentContext,
+                            total_cost: float, reason: str) -> tuple:
+-        """Force the model to give a final answer when limits are reached."""
++        """Force the model to give a final answer when limits are reached.
++
++        Returns (final_answer, total_cost, input_tokens, output_tokens) where the
++        token counts are for this single forced call (0 on error).
++        """
+         force_prompt = (
+             "You have reached the limit. "
+             "You MUST now provide a final answer based on the information you have gathered so far. "
+             "Do NOT call any more tools. Synthesize the available information and respond directly."
+         )
+-        
++
+         messages.append({"role": "user", "content": force_prompt})
+-        
++        in_tok = out_tok = 0
++
+         try:
+             response = self.llm.chat(messages=messages, tools=None, temperature=0.0)
+             total_cost += response["cost"]
++            in_tok = response.get("input_tokens", 0)
++            out_tok = response.get("output_tokens", 0)
+             final_answer = response["message"].get("content", "")
+-            
++
+             if self.verbose:
+                 print(f"Forced answer: {final_answer[:200]}...")
+                 print(f"Total cost: ${total_cost:.6f}")
+@@ -61,8 +68,8 @@ class BaseAgent:
+             if self.verbose:
+                 print(f"Error getting forced answer: {e}")
+             final_answer = f"Error: {reason} and failed to generate final answer."
+-        
+-        return final_answer, total_cost
++
++        return final_answer, total_cost, in_tok, out_tok
+     
+     def run(self, query: str) -> Dict[str, Any]:
+         context = AgentContext()
+@@ -73,6 +80,8 @@ class BaseAgent:
+         
+         trajectory = []
+         total_cost = 0.0
++        total_input_tokens = 0
++        total_output_tokens = 0
+         loop_count = 0
+         tool_schemas = self.tools.get_all_schemas()
+         
+@@ -89,14 +98,18 @@ class BaseAgent:
+                 if self.verbose:
+                     print(f"Token budget exceeded ({current_tokens} > {self.max_token_budget}), forcing answer...")
+                 
+-                final_answer, total_cost = self._force_final_answer(
++                final_answer, total_cost, in_tok, out_tok = self._force_final_answer(
+                     messages, context, total_cost, "Token budget exceeded"
+                 )
+-                
++                total_input_tokens += in_tok
++                total_output_tokens += out_tok
++
+                 return {
+                     "answer": final_answer,
+                     "trajectory": trajectory,
+                     "total_cost": total_cost,
++                    "input_tokens": total_input_tokens,
++                    "output_tokens": total_output_tokens,
+                     "loops": loop_count,
+                     "token_budget_exceeded": True,
+                     **context.get_summary()
+@@ -113,6 +126,8 @@ class BaseAgent:
+                 break
+             
+             total_cost += response["cost"]
++            total_input_tokens += response.get("input_tokens", 0)
++            total_output_tokens += response.get("output_tokens", 0)
+             message = response["message"]
+             messages.append(message)
+             
+@@ -127,6 +142,8 @@ class BaseAgent:
+                     "answer": final_answer,
+                     "trajectory": trajectory,
+                     "total_cost": total_cost,
++                    "input_tokens": total_input_tokens,
++                    "output_tokens": total_output_tokens,
+                     "loops": loop_count,
+                     **context.get_summary()
+                 }
+@@ -176,14 +193,18 @@ class BaseAgent:
+         if self.verbose:
+             print(f"Max loops reached ({self.max_loops}), forcing answer...")
+         
+-        final_answer, total_cost = self._force_final_answer(
++        final_answer, total_cost, in_tok, out_tok = self._force_final_answer(
+             messages, context, total_cost, "Maximum loops exceeded"
+         )
+-        
++        total_input_tokens += in_tok
++        total_output_tokens += out_tok
++
+         return {
+             "answer": final_answer,
+             "trajectory": trajectory,
+             "total_cost": total_cost,
++            "input_tokens": total_input_tokens,
++            "output_tokens": total_output_tokens,
+             "loops": loop_count,
+             "max_loops_exceeded": True,
+             **context.get_summary()

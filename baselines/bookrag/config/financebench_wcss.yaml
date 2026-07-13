@@ -1,0 +1,106 @@
+# BookRAG (gbc) config for FinanceBench on WCSS (Lem GPU, H100 / Hopper, 96GB).
+#
+# Same system as config/financebench_gpt4omini.yaml (LLM + VLM + embeddings on
+# OpenAI cloud, gpt-4o-mini), but the VRAM-bound local models run on the H100
+# instead of a 4GB laptop GPU / Mac MPS:
+#   - MinerU PDF parse  -> CUDA  (env MINERU_DEVICE_MODE=cuda, set by the .slurm)
+#   - Qwen3 reranker    -> device: cuda  (backend local, no vLLM server needed)
+#
+# We deliberately do NOT spin up the full gbc.yaml vLLM/sglang server fleet
+# (Qwen3-8B, Qwen2.5-VL, gme-Qwen2-VL, sglang MinerU across 8 GPUs). That fleet
+# needs an 8-GPU node + 6 long-lived servers; this single-process config indexes
+# real FinanceBench 10-Ks on ONE H100 with no server orchestration. Upgrading to
+# the local-LLM fleet is a future optimization, not required to index.
+#
+# API key is read from OPENAI_API_KEY (provider patch); never stored here.
+
+pdf_path: TODO   # set per-document by main.py from the dataset
+save_path: TODO  # set per-document by main.py (working_dir/doc_uuid)
+
+llm:
+  model_name: gpt-4o-mini
+  api_key: env            # resolved from OPENAI_API_KEY by provider patch
+  api_base: https://api.openai.com/v1
+  backend: openai
+  max_tokens: 5000
+  temperature: 0.1
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
+  max_workers: 8          # H100 node has many CPU cores; more cloud LLM workers
+
+vlm:
+  model_name: gpt-4o-mini
+  api_key: env
+  api_base: https://api.openai.com/v1
+  temperature: 0.1
+  max_tokens: 4000
+  backend: gpt
+
+index:
+  chunk_size: 512
+  overlap: 50
+
+mineru:
+  backend: pipeline       # local parsing on the H100 (device via MINERU_DEVICE_MODE=cuda)
+  method: auto
+  server_url: http://localhost:30000
+  # lang=ch: MinerU 2.1.11 ships v4-era OCR; ch_PP-OCRv5_det + ch_PP-OCRv4_rec
+  # handle English 10-K text + digits and avoid the missing-en-rec mismatch.
+  lang: ch
+
+tree:
+  node_keywords: True
+  node_summary: True
+  use_vlm: False          # skip VLM in tree (cost/time); cloud VLM still available
+
+graph:
+  extractor_type: "llm"
+  local_model_name: "en_core_web_sm"
+  image_description_force: False
+  max_gleaning: 0
+  refine_type: "advanced"
+  embedding_config:
+    model_name: text-embedding-3-small
+    backend: openai
+    max_length: 8192
+    device: "cpu"         # OpenAI cloud embeddings; device is a no-op here
+    api_base: https://api.openai.com/v1
+  reranker_config:
+    model_name: Qwen/Qwen3-Reranker-0.6B
+    max_length: 4096
+    device: "cuda"        # H100 GPU reranking
+    backend: local
+
+vdb:
+  mm_embedding: False
+  vdb_dir_name: "Tree_vdb"
+  collection_name: "TreeVDB"
+  force_rebuild: True
+  embedding_config:
+    model_name: text-embedding-3-small
+    backend: openai
+    max_length: 8192
+    device: "cpu"
+    api_base: https://api.openai.com/v1
+
+index_type: "gbc"
+rag_force_reprocess: True
+
+rag:
+  strategy: gbc
+  variant: standard
+  topk: 10
+  sim_threshold_e: 0.3
+  select_depth: 2
+  max_retry: 2
+  reranker_config:
+    model_name: Qwen/Qwen3-Reranker-0.6B
+    max_length: 4096
+    device: "cuda"        # H100 GPU reranking
+    backend: local
+  mm_reranker_config:
+    type: "text"
+    model_name: text-embedding-3-small
+    backend: openai
+    api_base: https://api.openai.com/v1
+    device: "cpu"

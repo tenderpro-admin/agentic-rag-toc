@@ -1,0 +1,4 @@
+# Dataset config for the FinanceBench BOEING_2022_10K smoke run.
+dataset_path: ../datasets/financebench_boeing_smoke.json
+working_dir: ../runs/financebench
+dataset_name: financebench
