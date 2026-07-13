@@ -14,8 +14,8 @@
 # Only FinanceBench-specific change vs gbc.yaml: mineru.lang ch (handles English
 # 10-K text + digits with MinerU 2.1.11's shipped OCR; see financebench_wcss.yaml).
 
-pdf_path: TODO
-save_path: TODO
+pdf_path: null   # set per-document by main.py from the dataset
+save_path: null  # set per-document by main.py (working_dir/doc_uuid)
 
 llm:
   # ABLATION: answer/reasoning LLM = OpenAI gpt-4.1-mini (cloud). Retrieval is
@@ -93,7 +93,7 @@ rag:
   strategy: gbc
   variant: standard
   topk: 10
-  sim_threshold: 0.3
+  sim_threshold_e: 0.3
   select_depth: 2
   max_retry: 2
   reranker_config:

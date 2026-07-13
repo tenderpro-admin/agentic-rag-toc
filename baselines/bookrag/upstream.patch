@@ -1,11 +1,40 @@
 diff --git a/Core/provider/llm.py b/Core/provider/llm.py
-index f353edc..70246bf 100644
+index f353edc..2f9e9d2 100644
 --- a/Core/provider/llm.py
 +++ b/Core/provider/llm.py
-@@ -82,6 +82,16 @@ class OpenAIController(BaseLLMController):
-         else:
-             self.client = OpenAI(api_key=llm_config.api_key)
+@@ -1,8 +1,20 @@
+ from typing import Dict, Optional, Any, List, Union
+ from abc import ABC, abstractmethod
+ from openai import OpenAI
++import os
+ import ollama
+ import logging
++
++
++def _resolve_api_key(configured: Optional[str]) -> Optional[str]:
++    """Use OPENAI_API_KEY from env when the config key is a placeholder.
++
++    Lets configs ship a sentinel (env/openai/empty/None) instead of a real
++    secret; falls back to the configured value for genuine local servers.
++    """
++    if configured in (None, "", "env", "openai", "empty", "None"):
++        return os.environ.get("OPENAI_API_KEY", configured)
++    return configured
+ from pydantic import BaseModel
+ from concurrent.futures import ThreadPoolExecutor, as_completed
+ from Core.Common.Memory import Memory
+@@ -77,10 +89,21 @@ class OpenAIController(BaseLLMController):
+             else 0.0
+         )
  
++        api_key = _resolve_api_key(llm_config.api_key)
+         if base_url is not None:
+-            self.client = OpenAI(api_key=llm_config.api_key, base_url=base_url)
++            self.client = OpenAI(api_key=api_key, base_url=base_url)
+         else:
+-            self.client = OpenAI(api_key=llm_config.api_key)
++            self.client = OpenAI(api_key=api_key)
++
 +        # `chat_template_kwargs` (the Qwen thinking-mode toggle) is a vLLM-only
 +        # extension; the real OpenAI API rejects it with 400 "Unknown parameter".
 +        # Only send it to a local vLLM endpoint, not to api.openai.com.
@@ -15,11 +44,10 @@ index f353edc..70246bf 100644
 +        # (only default 1) and frequency/presence_penalty. Omit those for them.
 +        m = (self.model or "").lower()
 +        self._is_reasoning = m.startswith(("gpt-5", "o1", "o3", "o4"))
-+
+ 
      def _prepare_messages(
          self, prompt_or_memory: Union[str, Memory], add_system_prompt: bool = True
-     ) -> List[Dict[str, Any]]:
-@@ -105,12 +115,20 @@ class OpenAIController(BaseLLMController):
+@@ -105,12 +128,20 @@ class OpenAIController(BaseLLMController):
          parameters = {
              "model": self.model,
              "messages": messages,
@@ -45,7 +73,7 @@ index f353edc..70246bf 100644
          if json_response:
              parameters["response_format"] = {"type": "json_object"}
          response = self.client.chat.completions.create(**parameters)
-@@ -161,15 +179,18 @@ class OpenAIController(BaseLLMController):
+@@ -161,15 +192,18 @@ class OpenAIController(BaseLLMController):
                      )
              messages = [{"role": "user", "content": content_list}]
  
@@ -114,6 +142,26 @@ index d3aae30..77b4dbe 100644
  
              self.model = (
                  AutoModelForCausalLM.from_pretrained(model_name, **model_args)
+diff --git a/Core/provider/vlm.py b/Core/provider/vlm.py
+index 1741208..66d00ca 100644
+--- a/Core/provider/vlm.py
++++ b/Core/provider/vlm.py
+@@ -157,10 +157,13 @@ class GPTVLMController(BaseVLMController):
+         from openai import OpenAI
+ 
+         self.model_name = config.model_name or "gpt-4o"
++        api_key = config.api_key
++        if api_key in (None, "", "env", "openai", "empty", "None"):
++            api_key = os.environ.get("OPENAI_API_KEY", api_key)
+         self.client = (
+-            OpenAI(api_key=config.api_key, base_url=config.api_base)
++            OpenAI(api_key=api_key, base_url=config.api_base)
+             if config.api_base
+-            else OpenAI(api_key=config.api_key)
++            else OpenAI(api_key=api_key)
+         )
+         self.temperature = config.temperature or 0.1
+         self.max_tokens = config.max_tokens or 1000
 diff --git a/Core/rag/gbc_rag.py b/Core/rag/gbc_rag.py
 index 45e58a5..f455328 100644
 --- a/Core/rag/gbc_rag.py

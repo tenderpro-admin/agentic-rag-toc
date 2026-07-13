@@ -35,7 +35,12 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _to_result(row: dict[str, Any]) -> dict[str, Any]:
     pred = row.get("pred_answer", "") or ""
-    is_error = pred.startswith("Error:") or bool(row.get("error"))
+    # Prefer the explicit error field; fall back to the "Error:" sentinel only
+    # when no error key is present on the row.
+    if "error" in row:
+        is_error = bool(row.get("error"))
+    else:
+        is_error = pred.startswith("Error:")
     status = "failed" if is_error else "completed"
     return {
         "test_id": row.get("qid", ""),

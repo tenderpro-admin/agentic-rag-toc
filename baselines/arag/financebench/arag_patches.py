@@ -14,12 +14,13 @@ import requests
 
 from arag.core.llm import LLMClient
 
-_REASONING_HINTS = ("gpt-5", "o1", "o3", "o4")
+# Prefix-match, consistent with answer.slurm's model globs (gpt-5*|o1*|o3*|o4*);
+# substring matching would misclassify names that merely contain these tokens.
+_REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
 
 
 def _is_reasoning(model: str) -> bool:
-    m = model.lower()
-    return any(h in m for h in _REASONING_HINTS)
+    return model.lower().startswith(_REASONING_PREFIXES)
 
 
 def _patched_chat(self, messages, tools=None, temperature=None, max_tokens=None):

@@ -1,14 +1,18 @@
 #!/bin/bash
-# Score BookRAG predictions with the SAME judge that grades PageIndex, which
+# Score BookRAG predictions with the SAME judge that grades PageIndex/A-RAG, which
 # lives in the arag-toc repo. Copies predictions into arag-toc's results tree,
-# runs its judge there, and writes metrics/bookrag_<model>.json next to
-# metrics/pageindex_<model>.json. Run as the DVC `judge` stage.
+# runs its judge there (gpt-5.4-mini by default), and writes metrics/bookrag_<model>.json
+# next to metrics/pageindex_<model>.json. Run as the DVC `judge` stage.
+#
+# arag-toc's eval.judge_predictions reads the judge model from LLM_JUDGE_MODEL_ID
+# (no --judge-model flag), so we export JUDGE_MODEL into it.
 #
 # Env: ANSWER_MODEL, JUDGE_MODEL, PARALLEL, ARAG_TOC (defaults ../arag-toc).
 set -euo pipefail
 
 ANSWER_MODEL="${ANSWER_MODEL:-gpt-4o-mini}"
-JUDGE_MODEL="${JUDGE_MODEL:-gpt-5-mini-2025-08-07}"
+JUDGE_MODEL="${JUDGE_MODEL:-gpt-5.4-mini}"
+export LLM_JUDGE_MODEL_ID="$JUDGE_MODEL"
 PARALLEL="${PARALLEL:-4}"
 ARAG_TOC="${ARAG_TOC:-../arag-toc}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,9 +24,10 @@ cp "$HERE/$REL/predictions.json" "$ARAG_TOC/$REL/predictions.json"
 
 ( cd "$ARAG_TOC"
   set -a; . ./.env; set +a
+  export LLM_JUDGE_MODEL_ID="$JUDGE_MODEL"   # re-assert after .env sourcing
   python -m eval.judge_predictions \
     "$REL/predictions.json" \
-    --judge-model "$JUDGE_MODEL" --parallel "$PARALLEL" \
+    --parallel "$PARALLEL" \
     --output "$REL/judged.json" \
     --metrics-out "metrics/bookrag_$ANSWER_MODEL.json" )
 

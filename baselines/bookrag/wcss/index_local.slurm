@@ -3,7 +3,7 @@
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH --partition=lem-gpu
-#SBATCH --account=hpc-tkajdanowicz-1763478893
+# Account/partition: export SBATCH_ACCOUNT=<your-grant> (and optionally SBATCH_PARTITION) before submitting; sbatch reads them from the environment.
 #SBATCH --gres=gpu:hopper:4
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=32

@@ -11,13 +11,13 @@ RUNS="${RUNS:-$BOOKRAG/runs/financebench}"
 
 MODELS="${MODELS:-gpt-5-mini-2025-08-07 gpt-5-2025-08-07 gpt-4.1-mini-2025-04-14 gpt-4o-2024-08-06 gpt-4o-mini-2024-07-18}"
 
-docs_total=$(find "$RUNS" -maxdepth 2 -name '*.md' -path '*/auto/*' 2>/dev/null | wc -l)
+docs_total=$(find "$RUNS" -maxdepth 3 -name '*.md' -path '*/auto/*' 2>/dev/null | wc -l)
 indexes=$(find "$ARAG_DATA" -name sentence_index.pkl 2>/dev/null | wc -l)
 metrics=0
 preds_json=""
 for m in $MODELS; do
   n=0
-  [ -f "$RESULTS_DIR/$m/predictions.jsonl" ] && n=$(grep -c . "$RESULTS_DIR/$m/predictions.jsonl" 2>/dev/null || echo 0)
+  [ -f "$RESULTS_DIR/$m/predictions.jsonl" ] && n=$(grep -c . "$RESULTS_DIR/$m/predictions.jsonl" 2>/dev/null || true)
   preds_json="$preds_json\"$m\":$n,"
   [ -f "$WORKDIR/metrics/arag_$m.json" ] && metrics=$((metrics+1))
 done

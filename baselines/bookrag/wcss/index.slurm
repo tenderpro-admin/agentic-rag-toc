@@ -3,7 +3,7 @@
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH --partition=lem-gpu
-#SBATCH --account=hpc-tkajdanowicz-1763478893
+# Account/partition: export SBATCH_ACCOUNT=<your-grant> (and optionally SBATCH_PARTITION) before submitting; sbatch reads them from the environment.
 #SBATCH --gres=gpu:hopper:1
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
@@ -30,4 +30,6 @@ export MINERU_DEVICE="${MINERU_DEVICE:-cuda}"
 
 source "$WORKDIR/wcss/_common.sh"
 bookrag_run
-echo "INDEX_DONE rc=$? at $(date)"
+# Under `set -e` reaching this line means the index build succeeded (a failure
+# would have exited the job non-zero), so there is no rc to report here.
+echo "INDEX_DONE at $(date)"

@@ -1,6 +1,9 @@
-# Dataset config for the FULL FinanceBench set (built by the DVC `dataset` stage
-# from params.yaml `docs`, e.g. docs: all -> all 84 PDFs). The boeing cfg next to
-# this one stays for the single-doc smoke.
-dataset_path: ../datasets/financebench.json
-working_dir: ../runs/financebench
+# Dataset config for the FULL FinanceBench set. main.py resolves these paths
+# relative to the CWD it is launched from (the repo root — via the Makefile or
+# wcss/run_remote.sh), so they are repo-root-relative. Build the dataset first
+# with `make dataset DOCS=all` (or run_remote.sh's remote dataset step), which
+# writes datasets/financebench.json. The boeing cfg next to this one stays for
+# the single-doc smoke.
+dataset_path: datasets/financebench.json
+working_dir: runs/financebench
 dataset_name: financebench

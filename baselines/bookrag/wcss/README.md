@@ -1,86 +1,101 @@
 # BookRAG × FinanceBench on WCSS (Lem GPU / H100)
 
-Run the VRAM-heavy BookRAG indexing on the WCSS H100 cluster, then answer and
-judge with the **same** metrics tracking as the PageIndex baseline in `arag-toc`.
+Build the VRAM-heavy BookRAG index on the WCSS H100 cluster, run the answer-model
+ablation over that frozen index, then judge locally with the **same** judge as the
+PageIndex baseline in `arag-toc`.
 
 ```
- index  (WCSS H100)            answer (WCSS H100)         judge (local, arag-toc)
- ─────────────────────         ──────────────────        ───────────────────────
- dataset build (remote)        RAG over frozen index     copy predictions →
- MinerU PDF parse  (cuda)  →   reranker/embeds (cuda) →  eval.judge_predictions
- tree → graph → vdb            export_predictions.py     (gpt-5-mini, FIXED)
- → runs/financebench/<uuid>    → predictions.json        → metrics/bookrag_<m>.json
+ index  (WCSS H100, once)       answer (WCSS H100, per model)    judge (local, arag-toc)
+ ─────────────────────────      ─────────────────────────────    ───────────────────────
+ dataset build (remote)         RAG over the FROZEN index         copy predictions →
+ MinerU PDF parse  (cuda)   →   local Qwen fleet OR cloud LLM  →  eval.judge_predictions
+ tree → graph → vdb             export_predictions.py             (gpt-5.4-mini, FIXED)
+ (local Qwen fleet)             → predictions.json                → metrics/bookrag_<m>.json
+ → runs/financebench/<uuid>
 ```
 
 ## Why this shape
 
-The full upstream `config/gbc.yaml` fleet needs an 8-GPU node and 6 long-lived
-vLLM/sglang servers (Qwen3-8B, Qwen2.5-VL, gme-Qwen2-VL, sglang MinerU, two
-rerankers). We don't need that to *index*. `config/financebench_wcss.yaml` keeps
-the LLM/VLM/embeddings on **OpenAI cloud** (gpt-4o-mini) and moves only the two
-VRAM-bound pieces to **one H100**:
+The BookIndex (MinerU parse → tree → graph → vdb) is expensive, so it is built
+**once** with BookRAG's official all-local Qwen fleet on one 4× H100 node and then
+**frozen**. Every ablation instance answers over that identical frozen index, so
+the only variable is the answering LLM — an honest answer-model ablation. The
+answer LLM is either the local `Qwen3-8B-AWQ` (served by `wcss/serve_fleet.sh`) or
+a cloud OpenAI model (`CLOUD_LLM=1`, `config/financebench_wcss_gpt.yaml`); the
+retrieval stack (Qwen embed + in-process Qwen reranker) stays fixed so it matches
+the frozen vdb.
 
-- **MinerU** PDF parse → `MINERU_DEVICE_MODE=cuda` (OOM'd on a 4 GB laptop GPU,
-  slow on Mac MPS; on a 96 GB H100 it flies — 190-page 10-K layout in seconds).
-- **Qwen3-Reranker-0.6B** → `device: cuda`, `backend: local` (no server).
-
-Single GPU, single process, no server orchestration. Upgrading to the local-LLM
-vLLM fleet is a future optimization, not required to index.
+(`config/financebench_wcss.yaml` / `financebench_gpt4omini.yaml` keep a simpler
+single-GPU, cloud-LLM index path for smoke/debug; the ablation itself uses the
+local-fleet configs above.)
 
 ## Cluster facts (baked into the scripts)
 
 | Thing | Value |
 |---|---|
-| Login | `ssh <your-login>@ui.wcss.pl` |
+| Login | `ssh <your-login>@ui.wcss.pl` (set `WCSS_HOST`) |
 | GPU partition | `lem-gpu` (smoke: `lem-gpu-short`) |
-| GPU request | `--gres=gpu:hopper:1` (H100, 96 GB) |
-| Account | `hpc-tkajdanowicz-1763478893` |
+| GPU request | `--gres=gpu:hopper:4` (fleet index/answer); `:1` for the simple cloud path |
+| Account | `<your-grant-account>` — `export SBATCH_ACCOUNT=...` before submitting; `sbatch` reads it from the environment (optionally `SBATCH_PARTITION`) |
 | Checkout | `~/projects/BookRAG` |
 | FinanceBench data | `~/finance_bench_root/datasets/finance_bench/` |
 | conda env | `bookrag` (py3.12, torch 2.7.1+cu126) |
 | Model cache | `~/projects/BookRAG/.cache/hf` (offline on compute nodes) |
-| Secrets | `~/projects/BookRAG/.env` → `OPENAI_API_KEY` |
+| Fleet models | pre-downloaded by `wcss/setup_fleet.sh` → `wcss/fleet_paths.env` |
+| Secrets | `~/projects/BookRAG/.env` → `OPENAI_API_KEY` (cloud LLM + judge only) |
 
 ## One-time setup
 
 ```bash
-make wcss-setup       # rsync repo + build conda env + pre-download all models
+make wcss-setup                 # rsync repo + build conda env + pre-download models
+ssh <your-login>@ui.wcss.pl 'cd ~/projects/BookRAG && bash wcss/setup_fleet.sh'
 ```
 
 `wcss/setup_env.sh` runs on the **login node** (the only node with internet):
-creates the `bookrag` env, `pip install -r requirements.txt` plus
-`mineru[core]==2.1.11 ftfy dill`, pre-downloads the MinerU pipeline models and
-the Qwen reranker into the persistent HF cache. Jobs then run with
-`HF_HUB_OFFLINE=1` because GPU compute nodes are treated as offline.
+creates the `bookrag` env, installs deps, and pre-downloads the MinerU pipeline
+models and the in-process Qwen reranker into the persistent HF cache.
+`wcss/setup_fleet.sh` pre-downloads the vLLM fleet (Qwen3-8B-AWQ, embedder,
+optional VLM/gme) from ModelScope and writes `wcss/fleet_paths.env`
+(`serve_fleet.sh` hard-fails without it). Jobs then run with `HF_HUB_OFFLINE=1`
+because GPU compute nodes are treated as offline.
 
 ## Run
 
 ```bash
-# DVC (preferred — index -> answer -> judge, with metrics):
-uv run dvc repro
-SMOKE=1 DOCS=BOEING_2022_10K uv run dvc repro index   # single-doc smoke
+export SBATCH_ACCOUNT=<your-grant-account>
 
-# or via make:
-make wcss-smoke                       # BOEING end to end
-make wcss-index DOCS=all              # full 84-doc set
-make wcss-answer MODEL=gpt-4o-mini
+# DVC (preferred — answer-model matrix over the frozen index -> judge, with metrics):
+uv run dvc repro
+
+# single-doc smoke via make:
+make wcss-index DOCS=BOEING_2022_10K SMOKE=1
+make wcss-answer MODEL=gpt-4o-mini DOCS=BOEING_2022_10K
 make wcss-judge  MODEL=gpt-4o-mini
+
+# full 84-doc set:
+make wcss-index DOCS=all
 ```
 
-`wcss/run_remote.sh` is **synchronous** (`sbatch --wait`) and returns the job's
-exit code, so `dvc repro` blocks until the cluster job finishes and fails if it
-fails. It pushes the checkout, builds the dataset on WCSS (so `doc_path` points
-at the remote PDFs), submits the SLURM job, and rsyncs `runs/` + `results/` back.
+`wcss/run_remote.sh` submits the job with `sbatch --parsable`, then **polls**
+(`squeue`, falling back to `sacct` when the job leaves the queue) until it
+finishes and exits with the job's final state — so `dvc repro` blocks until the
+cluster job completes and fails if it fails. Polling (not `sbatch --wait`) keeps a
+single congested login-node ssh from wedging the run. It pushes the checkout,
+builds the dataset on WCSS (so `doc_path` points at the remote PDFs), submits, and
+rsyncs `runs/` + `results/` back.
+
+`dvc.lock` is **not committed**: it is produced by `dvc repro`, which requires the
+private cluster; the committed state is the pipeline definition only.
 
 ## Gotchas handled (WCSS skill)
 
-- **Absolute paths**: the upstream dataset cfg uses `../datasets/...`, which only
-  resolves with `CWD=Scripts/`. `_common.sh` generates an absolute-path dataset
-  cfg per job (paths are host-specific via `$WORKDIR`).
-- **Cache isolation**: ephemeral caches (pip/triton/inductor) go to `$TMPDIR`;
-  the model cache is persistent + pre-populated (compute nodes are offline).
+- **Absolute paths**: `_common.sh` generates an absolute-path dataset cfg per job
+  (paths are host-specific via `$WORKDIR`).
+- **Cache isolation**: ephemeral caches (pip/triton/inductor) go to `$TMPDIR`; the
+  model cache is persistent + pre-populated (compute nodes are offline).
 - **Silent success**: `main.py` logs some failures yet exits 0 — `_common.sh`
-  asserts the expected `runs/.../` artifacts exist and fails the job otherwise.
+  asserts the expected `runs/.../` artifacts exist and catches a fresh
+  `financebench-*_error*.txt` (index or rag), failing the job otherwise.
 
 ## Debugging
 

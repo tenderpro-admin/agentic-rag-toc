@@ -5,7 +5,7 @@
 #SBATCH --time=06:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --account=hpc-tkajdanowicz-1763478893
+# Account/partition: export SBATCH_ACCOUNT=<your-grant> (and optionally SBATCH_PARTITION) before submitting; sbatch reads them from the environment.
 # Answer all FinanceBench questions over the FROZEN per-doc index with ONE
 # matrix model (gpt-* via OpenAI cloud). GPU is used for Qwen query-embedding
 # only. Resume-safe (skips qids already in predictions.jsonl). Then export to
@@ -44,5 +44,5 @@ if [ -z "${LIMIT:-}" ]; then
       --preds "$PREDS" --model "$MODEL" --out "$OUT_DIR/predictions.json"
 fi
 
-N=$(grep -c . "$PREDS" || echo 0)
+N=$(grep -c . "$PREDS" || true)
 echo "ANSWER_DONE model=$MODEL preds=$N smoke=${LIMIT:-0}"

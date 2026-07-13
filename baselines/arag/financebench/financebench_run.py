@@ -30,11 +30,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# A-RAG package import (src layout). Allow running from repo root.
+# A-RAG package import (src layout). Allow running from repo root. Repo root is
+# on the path too so `from financebench import arag_patches` resolves when this
+# file is run directly (not as a package).
 _REPO = Path(__file__).resolve().parents[1]
 _SRC = _REPO / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 
 from arag import BaseAgent, LLMClient, ToolRegistry  # noqa: E402
 from arag.tools.keyword_search import KeywordSearchTool  # noqa: E402
@@ -136,7 +140,11 @@ def build_index(doc_dir: Path, model: Any, batch_size: int = 16) -> Path:
     )
     index_dir = doc_dir / "index"
     index_dir.mkdir(parents=True, exist_ok=True)
-    with open(index_dir / "sentence_index.pkl", "wb") as f:
+    index_path = index_dir / "sentence_index.pkl"
+    # Atomic write: a killed job must not leave a truncated pickle that then gets
+    # skipped forever as if complete. Dump to a temp file in the same dir, replace.
+    tmp_path = index_dir / "sentence_index.pkl.tmp"
+    with open(tmp_path, "wb") as f:
         pickle.dump(
             {
                 "sentences": sentences,
@@ -147,7 +155,8 @@ def build_index(doc_dir: Path, model: Any, batch_size: int = 16) -> Path:
             },
             f,
         )
-    return index_dir / "sentence_index.pkl"
+    os.replace(tmp_path, index_path)
+    return index_path
 
 
 def _doc_dirs(data_dir: Path) -> list[Path]:
@@ -166,14 +175,23 @@ def _load_completed_qids(predictions_file: Path) -> set[str]:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if row.get("pred_answer") is not None and row.get("qid") is not None:
-            done.add(row["qid"])
+        if row.get("qid") is None or row.get("pred_answer") is None:
+            continue
+        # Error rows are not "done": they must retry on resume.
+        pred = row.get("pred_answer")
+        if row.get("error") or (isinstance(pred, str) and pred.startswith("Error:")):
+            continue
+        done.add(row["qid"])
     return done
+
+
+def _resolve_model(args) -> str:
+    return args.model or os.getenv("ARAG_MODEL", "gpt-4o-mini")
 
 
 def _make_client(args) -> LLMClient:
     return LLMClient(
-        model=args.model or os.getenv("ARAG_MODEL", "gpt-4o-mini"),
+        model=_resolve_model(args),
         api_key=args.api_key or os.getenv("ARAG_API_KEY"),
         base_url=args.base_url or os.getenv("ARAG_BASE_URL", "https://api.openai.com/v1"),
         reasoning_effort=args.reasoning_effort,
@@ -189,16 +207,17 @@ def answer_docs(args, model) -> dict[str, Any]:
     )
     completed = _load_completed_qids(predictions_file)
     n_done = 0
-    n_total = 0
     limit = getattr(args, "limit", None)
+    all_docs = _doc_dirs(data_dir)
+    # Full-dataset question count (independent of --limit, which breaks early).
+    n_total = sum(len(json.loads((d / "questions.json").read_text())) for d in all_docs)
 
-    for doc_dir in _doc_dirs(data_dir):
+    for doc_dir in all_docs:
         if limit and n_done >= limit:
             break
         chunks_file = str(doc_dir / "chunks.json")
         index_file = doc_dir / "index" / "sentence_index.pkl"
         questions = json.loads((doc_dir / "questions.json").read_text())
-        n_total += len(questions)
         pending = [q for q in questions if q["qid"] not in completed]
         if not pending:
             continue
@@ -260,7 +279,7 @@ def answer_docs(args, model) -> dict[str, Any]:
             n_done += 1
             print(f"[{n_done}] {q['doc_name']} {q['qid']} loops={pred['loops']}", flush=True)
 
-    return {"answered": n_done, "total": n_total, "model": args.model}
+    return {"answered": n_done, "total": n_total, "model": _resolve_model(args)}
 
 
 def index_docs(args, model) -> dict[str, Any]:

@@ -8,13 +8,14 @@
 # variable is the answering LLM — an honest answer-model ablation.
 #
 #   answer@<model>  (WCSS: RAG over the frozen index -> predictions, pulled local)
-#       -> judge@<model>  (LOCAL arag-toc: the SAME gpt-5-mini judge as PageIndex)
+#       -> judge@<model>  (LOCAL arag-toc: the SAME gpt-5.4-mini judge as PageIndex)
 #
 # answer shells out to wcss/run_remote.sh rag, which rsyncs this checkout to the
-# cluster (so the force-fresh serve_fleet.sh lands), submits `sbatch --wait` (so
-# `dvc repro` blocks + fails on job failure), then rsyncs results/ back. DVC runs
-# the matrix stages SEQUENTIALLY, so the shared frozen-index dir is never raced
-# and each model truly re-answers (serve_fleet clears eval_*/ before each rag).
+# cluster (so the force-fresh serve_fleet.sh lands), submits the job with sbatch
+# --parsable then POLLS until it finishes (blocking `dvc repro` and failing on a
+# non-COMPLETED state), then rsyncs results/ back. DVC runs the matrix stages
+# SEQUENTIALLY, so the shared frozen-index dir is never raced and each model truly
+# re-answers (serve_fleet clears eval_*/ before each rag).
 #
 # Run:
 #   uv run dvc repro                                  # all answer models + judge
@@ -46,6 +47,7 @@ stages:
       - config/financebench_wcss_local.yaml
       - config/financebench_wcss_gpt.yaml
       - Eval/export_predictions.py
+      - Scripts/preprocess/financebench_to_bookrag.py
       - Core
     outs:
       - results/financebench/bookrag/${item.model}/predictions.json:

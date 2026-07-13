@@ -7,7 +7,8 @@
 #   MODEL=gpt-4o-mini-2024-07-18 wcss/run_remote.sh answer
 set -euo pipefail
 ACTION="${1:?setup|index|answer}"
-WCSS="${WCSS:-<your-login>@ui.wcss.pl}"
+: "${WCSS:?set WCSS=<login>@ui.wcss.pl}"
+# REMOTE is interpreted as $HOME-relative on the cluster (WORKDIR=$HOME/$REMOTE).
 REMOTE="${REMOTE:-projects/arag}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 
