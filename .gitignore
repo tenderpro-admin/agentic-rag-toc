@@ -232,3 +232,5 @@ first_prompt*.txt
 /logs
 
 .DS_Store
+BookRAG/
+arag/

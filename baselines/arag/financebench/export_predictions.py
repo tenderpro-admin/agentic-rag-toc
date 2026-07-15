@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Convert A-RAG predictions.jsonl -> arag-toc predictions JSON for the judge.
+"""Convert A-RAG predictions.jsonl into the shared predictions JSON schema.
 
-The arag-toc judge (`eval.judge_predictions`, gpt-5-mini) consumes
+The shared evaluator consumes
 `payload["results"]` where each row has `test_id` / `question` / `generated` /
 `reference` / `status` — identical to `eval.pageindex_bench._build_prediction`
 and BookRAG's exporter. This makes A-RAG apples-to-apples with
@@ -24,13 +24,30 @@ from pathlib import Path
 from typing import Any
 
 
-def _load_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows = []
+def _load_jsonl(
+    path: Path, model: str, embed_model: str, data_fingerprint: str
+) -> list[dict[str, Any]]:
+    # Resume retries append a new row. Keep the latest successful row per qid so
+    # an earlier transient error cannot create duplicate benchmark cases.
+    by_qid: dict[str, dict[str, Any]] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line:
-            rows.append(json.loads(line))
-    return rows
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                row.get("answer_model") != model
+                or row.get("embedding_model") != embed_model
+                or row.get("data_fingerprint") != data_fingerprint
+            ):
+                continue
+            qid = str(row.get("qid", ""))
+            previous = by_qid.get(qid)
+            if previous is None or not row.get("error"):
+                by_qid[qid] = row
+    return list(by_qid.values())
 
 
 def _to_result(row: dict[str, Any]) -> dict[str, Any]:
@@ -41,7 +58,7 @@ def _to_result(row: dict[str, Any]) -> dict[str, Any]:
         is_error = bool(row.get("error"))
     else:
         is_error = pred.startswith("Error:")
-    status = "failed" if is_error else "completed"
+    status = "failed" if is_error or not pred.strip() else "completed"
     return {
         "test_id": row.get("qid", ""),
         "question": row.get("question", ""),
@@ -58,8 +75,43 @@ def _to_result(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def export(preds_path: Path, model: str, out_path: Path) -> dict[str, Any]:
-    rows = _load_jsonl(preds_path)
+def _expected_selection(data_dir: Path, limit: int | None) -> tuple[list[str], str]:
+    manifest_path = data_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise ValueError(f"Selection manifest missing at {manifest_path}; run prepare first")
+    manifest = json.loads(manifest_path.read_text())
+    qids = [str(qid) for qid in manifest.get("question_ids", [])]
+    fingerprint = str(manifest.get("fingerprint", ""))
+    if not fingerprint:
+        raise ValueError("Prepared selection manifest has no fingerprint; run prepare again")
+    return (qids[:limit] if limit else qids), fingerprint
+
+
+def export(
+    preds_path: Path,
+    model: str,
+    embed_model: str,
+    out_path: Path,
+    data_dir: Path,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    expected, data_fingerprint = _expected_selection(data_dir, limit)
+    expected_set = set(expected)
+    rows = [
+        row
+        for row in _load_jsonl(preds_path, model, embed_model, data_fingerprint)
+        if str(row.get("qid", "")) in expected_set
+    ]
+    got = [str(row.get("qid", "")) for row in rows]
+    missing = sorted(expected_set - set(got))
+    if len(expected_set) != len(expected):
+        raise ValueError("Prepared selection contains duplicate question IDs")
+    if missing or len(got) != len(set(got)):
+        raise ValueError(
+            "Predictions do not match the prepared selection: "
+            f"missing={missing}, duplicate_rows={len(got) - len(set(got))}"
+        )
+    rows.sort(key=lambda row: expected.index(str(row.get("qid", ""))))
     results = [_to_result(r) for r in rows]
     completed = [r for r in results if r["status"] == "completed"]
     total_cost = round(sum(float(r.get("total_cost", 0) or 0) for r in rows), 6)
@@ -82,7 +134,7 @@ def export(preds_path: Path, model: str, out_path: Path) -> dict[str, Any]:
         "method": "arag",
         "model": model,
         "answer_model": model,
-        "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
+        "embedding_model": embed_model,
         "benchmark_source": "financebench",
         "total_cases": len(results),
         "completed": len(completed),
@@ -99,6 +151,8 @@ def export(preds_path: Path, model: str, out_path: Path) -> dict[str, Any]:
         },
         "results": results,
     }
+    if len(completed) != len(results):
+        raise ValueError(f"{len(results) - len(completed)} prediction(s) failed")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
     return {
@@ -114,10 +168,20 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="A-RAG jsonl -> arag-toc predictions JSON")
     ap.add_argument("--preds", required=True, help="A-RAG predictions.jsonl")
     ap.add_argument("--model", required=True, help="answer model id (for labeling)")
+    ap.add_argument("--embed-model", default="Qwen/Qwen3-Embedding-0.6B")
     ap.add_argument("--out", required=True, help="output predictions.json")
+    ap.add_argument("--data-dir", required=True, help="prepared per-document data root")
+    ap.add_argument("--limit", type=int, default=None, help="expected question cap for smoke runs")
     args = ap.parse_args()
 
-    summary = export(Path(args.preds), args.model, Path(args.out))
+    summary = export(
+        Path(args.preds),
+        args.model,
+        args.embed_model,
+        Path(args.out),
+        Path(args.data_dir),
+        args.limit,
+    )
     print(json.dumps(summary, indent=2))
 
 
