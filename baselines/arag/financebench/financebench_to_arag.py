@@ -6,7 +6,7 @@ A-RAG ships no PDF parser/chunker — it consumes a flat passage list
 emit ONE corpus + ONE question set PER document (the per-doc runner builds a
 frozen embedding index per doc, identical across the answer-model matrix).
 
-Text layer = BookRAG's MinerU markdown (already parsed on WCSS at
+Text layer = BookRAG's MinerU markdown (parsed locally at
 runs/financebench/<doc_uuid>/auto/<doc_name>.md). Using the same parse as
 BookRAG controls parse quality; splitting it to flat paragraph/block passages is
 A-RAG-native. doc_uuid matches BookRAG (uuid5 of doc_name under a fixed
@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -35,13 +36,16 @@ from typing import Any
 # MinerU output dir). Do not change.
 NS = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
-# FinanceBench data root: FINANCEBENCH_DIR if set, else the sibling arag-toc
-# checkout (repo root is parents[3]; its sibling holds the dataset).
+# Defaults assume the A-RAG, BookRAG, and agentic-rag-toc clones are siblings.
+_REPO = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_ROOT = Path(
     os.environ.get(
         "FINANCEBENCH_DIR",
-        str(Path(__file__).resolve().parents[3].parent / "arag-toc"),
+        str(_REPO.parent / "agentic-rag-toc"),
     )
+)
+DEFAULT_RUNS_DIR = Path(
+    os.environ.get("BOOKRAG_RUNS_DIR", str(_REPO.parent / "BookRAG" / "runs" / "financebench"))
 )
 
 GT_RELPATH = "datasets/finance_bench/ground truth/financebench_open_source.jsonl"
@@ -135,6 +139,10 @@ def convert(
             f"'{GT_RELPATH}'."
         )
     rows = _load_rows(gt)
+    available_docs = {r["doc_name"] for r in rows}
+    unknown_docs = sorted((docs or set()) - available_docs)
+    if unknown_docs:
+        raise ValueError(f"Unknown FinanceBench document(s): {', '.join(unknown_docs)}")
 
     by_doc: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -145,6 +153,8 @@ def convert(
 
     built: list[str] = []
     missing_md: list[str] = []
+    selected_qids: list[str] = []
+    selection_hash = hashlib.sha256()
     for doc_name, doc_rows in sorted(by_doc.items()):
         md_path = _find_markdown(runs_dir, doc_name)
         if md_path is None:
@@ -153,9 +163,8 @@ def convert(
         passages = pack_passages(md_path.read_text(encoding="utf-8"))
         doc_out = out_dir / doc_name
         doc_out.mkdir(parents=True, exist_ok=True)
-        (doc_out / "chunks.json").write_text(
-            json.dumps(to_chunks_json(passages), ensure_ascii=False, indent=2)
-        )
+        chunks_json = json.dumps(to_chunks_json(passages), ensure_ascii=False, indent=2)
+        (doc_out / "chunks.json").write_text(chunks_json)
         questions = [
             {
                 "qid": r["financebench_id"],
@@ -166,10 +175,32 @@ def convert(
             }
             for r in doc_rows
         ]
-        (doc_out / "questions.json").write_text(
-            json.dumps(questions, ensure_ascii=False, indent=2)
-        )
+        questions_json = json.dumps(questions, ensure_ascii=False, indent=2)
+        (doc_out / "questions.json").write_text(questions_json)
         built.append(doc_name)
+        selected_qids.extend(q["qid"] for q in questions)
+        selection_hash.update(doc_name.encode())
+        selection_hash.update(chunks_json.encode())
+        selection_hash.update(questions_json.encode())
+
+    manifest_path = out_dir / "manifest.json"
+    if missing_md:
+        manifest_path.unlink(missing_ok=True)
+    else:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        manifest_tmp = manifest_path.with_suffix(".json.tmp")
+        manifest_tmp.write_text(
+            json.dumps(
+                {
+                    "documents": built,
+                    "question_ids": selected_qids,
+                    "fingerprint": selection_hash.hexdigest(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        os.replace(manifest_tmp, manifest_path)
 
     summary = {
         "built_docs": built,
@@ -185,7 +216,7 @@ def main() -> None:
     ap.add_argument("--docs", nargs="+", help="doc_name values, or 'all'")
     ap.add_argument(
         "--runs-dir",
-        required=True,
+        default=str(DEFAULT_RUNS_DIR),
         help="BookRAG runs/financebench dir holding <uuid>/auto/<doc>.md",
     )
     ap.add_argument("--out", required=True, help="output root for per-doc dirs")
@@ -203,9 +234,10 @@ def main() -> None:
     )
     print(json.dumps(summary, indent=2))
     if summary["missing_markdown"]:
-        print(
-            f"WARNING: {len(summary['missing_markdown'])} doc(s) had no MinerU markdown "
-            "(index those in BookRAG first).",
+        raise SystemExit(
+            f"Missing MinerU markdown for {len(summary['missing_markdown'])} doc(s): "
+            + ", ".join(summary["missing_markdown"])
+            + ". Index those documents in BookRAG first."
         )
 
 

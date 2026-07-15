@@ -23,6 +23,7 @@ Answer model + endpoint via flags or ARAG_MODEL / ARAG_BASE_URL / ARAG_API_KEY.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pickle
@@ -49,6 +50,28 @@ from financebench import arag_patches  # noqa: E402
 
 DEFAULT_EMBED_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 SYSTEM_PROMPT_PATH = _REPO / "src/arag/agent/prompts/default.txt"
+
+
+def resolve_device(requested: str | None) -> str:
+    """Resolve auto and reject explicitly unavailable accelerator backends."""
+    import torch
+
+    device = (requested or "auto").lower()
+    if device == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(f"CUDA device requested ({device}) but CUDA is unavailable")
+    if device == "mps" and not (
+        hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    ):
+        raise RuntimeError("MPS requested but unavailable")
+    if device != "cpu" and device != "mps" and not device.startswith("cuda"):
+        raise ValueError("device must be auto, cpu, mps, cuda, or cuda:<index>")
+    return device
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -152,6 +175,9 @@ def build_index(doc_dir: Path, model: Any, batch_size: int = 16) -> Path:
                 "sentence_to_chunk": sentence_to_chunk,
                 "chunks": chunk_lookup,
                 "model_name": getattr(model, "_arag_model_name", "shared"),
+                "chunks_sha256": hashlib.sha256(
+                    (doc_dir / "chunks.json").read_bytes()
+                ).hexdigest(),
             },
             f,
         )
@@ -160,10 +186,36 @@ def build_index(doc_dir: Path, model: Any, batch_size: int = 16) -> Path:
 
 
 def _doc_dirs(data_dir: Path) -> list[Path]:
-    return sorted(d for d in data_dir.iterdir() if d.is_dir() and (d / "chunks.json").exists())
+    manifest_path = data_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise RuntimeError(f"Selection manifest missing at {manifest_path}; run prepare first")
+    manifest = json.loads(manifest_path.read_text())
+    docs = [data_dir / name for name in manifest.get("documents", [])]
+    missing = [str(d) for d in docs if not (d / "chunks.json").exists()]
+    if missing:
+        raise RuntimeError(f"Prepared corpus is incomplete; missing: {', '.join(missing)}")
+    return docs
 
 
-def _load_completed_qids(predictions_file: Path) -> set[str]:
+def _index_matches(doc_dir: Path, model_name: str) -> bool:
+    index_file = doc_dir / "index" / "sentence_index.pkl"
+    if not index_file.exists():
+        return False
+    try:
+        with index_file.open("rb") as f:
+            index = pickle.load(f)
+    except Exception:  # A stale pickle can fail in several version-specific ways.
+        return False
+    chunks_hash = hashlib.sha256((doc_dir / "chunks.json").read_bytes()).hexdigest()
+    return index.get("model_name") == model_name and index.get("chunks_sha256") == chunks_hash
+
+
+def _load_completed_qids(
+    predictions_file: Path,
+    answer_model: str,
+    embed_model: str,
+    data_fingerprint: str,
+) -> set[str]:
     done: set[str] = set()
     if not predictions_file.exists():
         return done
@@ -175,6 +227,12 @@ def _load_completed_qids(predictions_file: Path) -> set[str]:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if (
+            row.get("answer_model") != answer_model
+            or row.get("embedding_model") != embed_model
+            or row.get("data_fingerprint") != data_fingerprint
+        ):
+            continue
         if row.get("qid") is None or row.get("pred_answer") is None:
             continue
         # Error rows are not "done": they must retry on resume.
@@ -183,6 +241,16 @@ def _load_completed_qids(predictions_file: Path) -> set[str]:
             continue
         done.add(row["qid"])
     return done
+
+
+def _repair_jsonl_tail(predictions_file: Path) -> None:
+    """Separate a truncated final record before appending resumed results."""
+    if not predictions_file.exists() or predictions_file.stat().st_size == 0:
+        return
+    with predictions_file.open("rb+") as f:
+        f.seek(-1, os.SEEK_END)
+        if f.read(1) != b"\n":
+            f.write(b"\n")
 
 
 def _resolve_model(args) -> str:
@@ -205,12 +273,26 @@ def answer_docs(args, model) -> dict[str, Any]:
     system_prompt = (
         SYSTEM_PROMPT_PATH.read_text() if SYSTEM_PROMPT_PATH.exists() else "You are a helpful assistant."
     )
-    completed = _load_completed_qids(predictions_file)
+    manifest = json.loads((data_dir / "manifest.json").read_text())
+    data_fingerprint = str(manifest.get("fingerprint", ""))
+    if not data_fingerprint:
+        raise RuntimeError("Prepared selection manifest has no fingerprint; run prepare again")
+    answer_model = _resolve_model(args)
+    completed = _load_completed_qids(
+        predictions_file, answer_model, args.embed_model, data_fingerprint
+    )
+    _repair_jsonl_tail(predictions_file)
     n_done = 0
+    n_failed = 0
     limit = getattr(args, "limit", None)
+    selected_qids = [str(qid) for qid in manifest.get("question_ids", [])]
+    if limit:
+        selected_qids = selected_qids[:limit]
+    selected_qid_set = set(selected_qids)
     all_docs = _doc_dirs(data_dir)
-    # Full-dataset question count (independent of --limit, which breaks early).
-    n_total = sum(len(json.loads((d / "questions.json").read_text())) for d in all_docs)
+    if not all_docs:
+        raise RuntimeError(f"No prepared documents found under {data_dir}; run prepare first")
+    n_total = len(selected_qids)
 
     for doc_dir in all_docs:
         if limit and n_done >= limit:
@@ -218,12 +300,17 @@ def answer_docs(args, model) -> dict[str, Any]:
         chunks_file = str(doc_dir / "chunks.json")
         index_file = doc_dir / "index" / "sentence_index.pkl"
         questions = json.loads((doc_dir / "questions.json").read_text())
-        pending = [q for q in questions if q["qid"] not in completed]
+        pending = [
+            q for q in questions if q["qid"] in selected_qid_set and q["qid"] not in completed
+        ]
         if not pending:
             continue
         if not index_file.exists():
-            print(f"[skip] {doc_dir.name}: no index (run --index-only first)", flush=True)
-            continue
+            raise RuntimeError(f"{doc_dir.name}: no index (run --index-only first)")
+        if not _index_matches(doc_dir, args.embed_model):
+            raise RuntimeError(
+                f"{doc_dir.name}: index does not match the current corpus/model; rebuild it"
+            )
 
         tools = ToolRegistry()
         tools.register(KeywordSearchTool(chunks_file=chunks_file))
@@ -248,19 +335,26 @@ def answer_docs(args, model) -> dict[str, Any]:
             )
             try:
                 result = agent.run(q["question"])
+                answer = str(result.get("answer") or "").strip()
+                if not answer or answer.startswith("Error:"):
+                    raise RuntimeError(answer or "agent returned an empty answer")
                 pred = {
                     "qid": q["qid"],
                     "question": q["question"],
                     "doc_name": q["doc_name"],
                     "gold_answer": q["gold_answer"],
-                    "pred_answer": result["answer"],
+                    "pred_answer": answer,
                     "total_cost": result.get("total_cost", 0),
                     "input_tokens": result.get("input_tokens", 0),
                     "output_tokens": result.get("output_tokens", 0),
                     "loops": result.get("loops", 0),
                     "trajectory": result.get("trajectory", []),
+                    "answer_model": answer_model,
+                    "embedding_model": args.embed_model,
+                    "data_fingerprint": data_fingerprint,
                 }
             except Exception as exc:  # noqa: BLE001
+                n_failed += 1
                 pred = {
                     "qid": q["qid"],
                     "question": q["question"],
@@ -273,21 +367,31 @@ def answer_docs(args, model) -> dict[str, Any]:
                     "loops": 0,
                     "trajectory": [],
                     "error": str(exc),
+                    "answer_model": answer_model,
+                    "embedding_model": args.embed_model,
+                    "data_fingerprint": data_fingerprint,
                 }
             with open(predictions_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(pred, ensure_ascii=False) + "\n")
             n_done += 1
             print(f"[{n_done}] {q['doc_name']} {q['qid']} loops={pred['loops']}", flush=True)
 
-    return {"answered": n_done, "total": n_total, "model": _resolve_model(args)}
+    return {
+        "answered": n_done,
+        "failed": n_failed,
+        "total": n_total,
+        "model": answer_model,
+    }
 
 
 def index_docs(args, model) -> dict[str, Any]:
     data_dir = Path(args.data_dir)
     built = 0
-    for doc_dir in _doc_dirs(data_dir):
-        index_file = doc_dir / "index" / "sentence_index.pkl"
-        if index_file.exists() and not args.force:
+    all_docs = _doc_dirs(data_dir)
+    if not all_docs:
+        raise RuntimeError(f"No prepared documents found under {data_dir}; run prepare first")
+    for doc_dir in all_docs:
+        if not args.force and _index_matches(doc_dir, args.embed_model):
             continue
         build_index(doc_dir, model, batch_size=args.batch_size)
         built += 1
@@ -303,7 +407,7 @@ def main() -> None:
     ap.add_argument("--index-only", action="store_true", help="build frozen indexes then exit")
     ap.add_argument("--force", action="store_true", help="rebuild existing indexes")
     ap.add_argument("--embed-model", default=DEFAULT_EMBED_MODEL)
-    ap.add_argument("--device", default=os.getenv("ARAG_EMBED_DEVICE"))
+    ap.add_argument("--device", default=os.getenv("ARAG_EMBED_DEVICE", "auto"))
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--model", default=None, help="answer model id")
     ap.add_argument("--base-url", default=None)
@@ -316,6 +420,7 @@ def main() -> None:
     args = ap.parse_args()
 
     arag_patches.apply()
+    args.device = resolve_device(args.device)
     print(f"Loading embed model: {args.embed_model} (device={args.device})", flush=True)
     model = load_embed_model(args.embed_model, args.device)
 
@@ -324,6 +429,8 @@ def main() -> None:
     else:
         summary = answer_docs(args, model)
     print(json.dumps(summary, indent=2))
+    if summary.get("failed"):
+        raise SystemExit(f"{summary['failed']} answer(s) failed; see {args.out}")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import requests
 
 from arag.core.llm import LLMClient
 
-# Prefix-match, consistent with answer.slurm's model globs (gpt-5*|o1*|o3*|o4*);
+# Prefix-match reasoning model families (gpt-5*|o1*|o3*|o4*);
 # substring matching would misclassify names that merely contain these tokens.
 _REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
 
