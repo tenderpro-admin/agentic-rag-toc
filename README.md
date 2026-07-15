@@ -216,29 +216,24 @@ The standard profile uses `Qwen/Qwen3-Embedding-0.6B` and `Qwen/Qwen3-Reranker-0
 
 ### A-RAG
 
-Clone and pin [A-RAG](https://github.com/Ayanami0730/arag), then copy the local harness from [`baselines/arag/`](baselines/arag/README.md) into the clone:
+From the repository root, use the setup script to clone the pinned [A-RAG](https://github.com/Ayanami0730/arag) commit, install the local harness from [`baselines/arag/`](baselines/arag/README.md), link `.env`, install dependencies, and check the FinanceBench and BookRAG smoke paths:
 
 ```bash
-cd "$ARAG_TOC"
-git clone https://github.com/Ayanami0730/arag.git arag
-git -C arag checkout a44de6b2216bf6791979c4b6ac4ae106212fa1a6
-cp -R baselines/arag/. arag/
-
-cd arag
-ln -sf ../.env .env
-make setup
+cd /path/to/agentic-rag-toc
+./scripts/setup_arag.sh
 ```
 
-If `arag/` already exists, verify that it is at commit `a44de6b2216bf6791979c4b6ac4ae106212fa1a6` and copy the harness without cloning it again.
+The script is safe to rerun when `arag/` is already at the expected commit. Use `./scripts/setup_arag.sh --prepare-only` to clone and install the overlay without creating the environment. The equivalent manual process is documented in the baseline README.
 
 After the BookRAG smoke test, point A-RAG at its MinerU output and run the matching one-case smoke test:
 
 ```bash
-export FINANCEBENCH_DIR="$ARAG_TOC"
-export BOOKRAG_RUNS_DIR="$ARAG_TOC/BookRAG/runs/financebench_qwen_smoke"
-
-make check
-make smoke
+make -C arag check \
+  FINANCEBENCH_DIR="$(pwd)" \
+  BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench_qwen_smoke"
+make -C arag smoke \
+  FINANCEBENCH_DIR="$(pwd)" \
+  BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench_qwen_smoke"
 ```
 
 The A-RAG smoke output is:
@@ -250,11 +245,11 @@ arag/results/financebench/arag-smoke/gpt-4o-mini/predictions.json
 For a full run, use the standard BookRAG run directory and keep indexing separate from answering so the same frozen index can be reused across answer models:
 
 ```bash
-export BOOKRAG_RUNS_DIR="$ARAG_TOC/BookRAG/runs/financebench"
-
-make index DOCS=all
-make answer MODEL=gpt-4o-mini
-make judge MODEL=gpt-4o-mini ARAG_TOC="$ARAG_TOC"
+make -C arag index DOCS=all \
+  FINANCEBENCH_DIR="$(pwd)" \
+  BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench"
+make -C arag answer MODEL=gpt-4o-mini
+make -C arag judge MODEL=gpt-4o-mini ARAG_TOC="$(pwd)"
 ```
 
 `DEVICE=auto` selects CUDA, then MPS, then CPU. Override it with `DEVICE=cuda`, `cuda:0`, `mps`, or `cpu`. A-RAG writes resumable JSONL during answering and exports the validated artifact to `arag/results/financebench/arag/<model>/predictions.json`.

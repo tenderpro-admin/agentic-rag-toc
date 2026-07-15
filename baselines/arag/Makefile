@@ -3,6 +3,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+REPO_PARENT := $(abspath $(ROOT)/..)
 PYTHON := uv run --extra full python
 
 MODEL ?= gpt-4o-mini
@@ -14,9 +15,13 @@ EMBED_MODEL ?= Qwen/Qwen3-Embedding-0.6B
 MAX_LOOPS ?= 15
 LIMIT ?=
 
-BOOKRAG ?= $(abspath $(ROOT)/../BookRAG)
+BOOKRAG ?= $(REPO_PARENT)/BookRAG
 BOOKRAG_RUNS_DIR ?= $(BOOKRAG)/runs/financebench
-FINANCEBENCH_DIR ?= $(abspath $(ROOT)/../agentic-rag-toc)
+DEFAULT_FINANCEBENCH_DIR := $(if $(wildcard $(REPO_PARENT)/datasets/finance_bench),$(REPO_PARENT),$(abspath $(ROOT)/../agentic-rag-toc))
+FINANCEBENCH_DIR ?= $(DEFAULT_FINANCEBENCH_DIR)
+ifeq ($(strip $(FINANCEBENCH_DIR)),)
+override FINANCEBENCH_DIR := $(DEFAULT_FINANCEBENCH_DIR)
+endif
 DATA_DIR ?= $(ROOT)/data/financebench
 RESULTS_DIR ?= $(ROOT)/results/financebench/arag
 PRED_DIR = $(RESULTS_DIR)/$(MODEL)
@@ -54,9 +59,9 @@ setup:
 
 check:
 	@test -f "$(FINANCEBENCH_DIR)/datasets/finance_bench/ground truth/financebench_open_source.jsonl" || \
-		{ echo "ERROR: FinanceBench data not found; set FINANCEBENCH_DIR=" >&2; exit 1; }
+		{ echo "ERROR: FinanceBench data not found at $(FINANCEBENCH_DIR); set FINANCEBENCH_DIR=/absolute/path/to/agentic-rag-toc" >&2; exit 1; }
 	@test -d "$(BOOKRAG_RUNS_DIR)" || \
-		{ echo "ERROR: BookRAG runs not found; set BOOKRAG_RUNS_DIR=" >&2; exit 1; }
+		{ echo "ERROR: BookRAG runs not found at $(BOOKRAG_RUNS_DIR); set BOOKRAG_RUNS_DIR=/absolute/path/to/BookRAG/runs/<run>" >&2; exit 1; }
 	@cd "$(ROOT)" && $(PYTHON) -c 'from financebench.financebench_run import resolve_device; import sentence_transformers; print("device:", resolve_device("$(DEVICE)")); print("sentence-transformers:", sentence_transformers.__version__)'
 
 prepare:

@@ -6,42 +6,43 @@ Local macOS/Linux reproduction harness for running [A-RAG](https://github.com/Ay
 
 Requirements: `git`, `uv`, FinanceBench data, and BookRAG MinerU markdown for the selected documents.
 
-1. Clone and pin upstream A-RAG:
+From the `agentic-rag-toc` repository root, run:
 
-   ```bash
-   git clone https://github.com/Ayanami0730/arag.git
-   cd arag
-   git checkout a44de6b2216bf6791979c4b6ac4ae106212fa1a6
-   ```
+```bash
+./scripts/setup_arag.sh
+```
 
-2. Copy the contents of `baselines/arag/` into the clone root. The harness must provide `Makefile`, `upstream.patch`, `financebench/`, and `.env.example`.
+The script clones and pins A-RAG, copies this overlay, links the repository `.env`, installs dependencies, and checks the root FinanceBench data plus BookRAG's smoke output. It is safe to rerun. Use `./scripts/setup_arag.sh --prepare-only` to skip dependency installation and checks.
 
-3. Install dependencies and configure the answer endpoint:
+The equivalent manual setup is:
 
-   ```bash
-   make setup
-   cp .env.example .env
-   # Edit .env and set OPENAI_API_KEY, or ARAG_API_KEY and ARAG_BASE_URL.
-   export FINANCEBENCH_DIR=/path/to/agentic-rag-toc
-   export BOOKRAG_RUNS_DIR=/path/to/BookRAG/runs/financebench
-   export ARAG_TOC="$FINANCEBENCH_DIR"
-   make check
-   ```
+```bash
+git clone https://github.com/Ayanami0730/arag.git arag
+git -C arag checkout a44de6b2216bf6791979c4b6ac4ae106212fa1a6
+cp -R baselines/arag/. arag/
+ln -s ../.env arag/.env
+make -C arag setup
+make -C arag check \
+  FINANCEBENCH_DIR="$(pwd)" \
+  BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench_qwen_smoke"
+```
+
+Configure `OPENAI_API_KEY`, or `ARAG_API_KEY` and `ARAG_BASE_URL`, in the root `.env` before answering.
 
 ## Run
 
 ```bash
-make index DOCS=all
-make answer MODEL=gpt-4o-mini
-make judge
+make -C arag smoke BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench_qwen_smoke"
+make -C arag index DOCS=all BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench"
+make -C arag answer MODEL=gpt-4o-mini
+make -C arag judge
 ```
 
 Useful alternatives:
 
 ```bash
-make answer-all
-make smoke
-make all
+make -C arag answer-all
+make -C arag all
 ```
 
 `DEVICE=auto` chooses CUDA, then MPS, then CPU. Override it with `DEVICE=cuda`, `cuda:0`, `mps`, or `cpu`. `make judge` uses the shared `postprocessing.evaluator` and defaults to `gpt-5.4-mini`.
