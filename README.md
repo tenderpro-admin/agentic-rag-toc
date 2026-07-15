@@ -25,12 +25,6 @@ uv run python scripts/fetch_bench_data.py
 
 This downloads FinanceBench questions, document metadata, and PDFs into `datasets/finance_bench/`.
 
-If you also want the optional PageIndex baseline, initialize the bundled submodule:
-
-```bash
-git submodule update --init --recursive
-```
-
 ## Environment
 
 `app_platform.config` auto-loads `.env` from the repo root. Start from `env_example.txt` and set values appropriate for your machine.
@@ -137,112 +131,72 @@ uv run python -m eval.qa \
   --results-dir results/financebench/open_source
 ```
 
-Optional PageIndex baseline:
+## Baselines
+
+PageIndex, BookRAG, and A-RAG are reproduced locally and evaluated with the same FinanceBench data and judge. Complete [Setup](#setup) first so `.env` and `datasets/finance_bench/` are available.
+
+| Baseline | Index and retrieval | Setup |
+| --- | --- | --- |
+| [PageIndex](#pageindex) | LLM-generated hierarchical tree; no embeddings | Bundled Git submodule |
+| [BookRAG](#bookrag) | MinerU, graph construction, local Qwen embeddings and reranking | Repository bootstrap script |
+| [A-RAG](#a-rag) | Local Qwen embeddings over BookRAG's MinerU text | Repository bootstrap script |
+
+BookRAG must run before A-RAG because A-RAG consumes its parsed MinerU markdown. Start each baseline with its one-case smoke command before launching a full run.
+
+### PageIndex
+
+Initialize the bundled [PageIndex](https://github.com/VectifyAI/PageIndex) submodule, then run one case:
+
+```bash
+git submodule update --init --recursive
+uv run python -m eval.pageindex_bench --limit 1
+```
+
+Run the full prediction set with:
 
 ```bash
 uv run python -m eval.pageindex_bench --parallel 10
 ```
 
-The first PageIndex run builds a local workspace under `.benchmark_artifacts/pageindex/workspace`.
-
-## External Baselines
-
-The BookRAG and A-RAG reproduction harnesses run locally on macOS or Linux. They support CUDA, Apple MPS, and CPU; no SLURM cluster is required. Both use `Qwen/Qwen3-Embedding-0.6B` locally and use the same evaluator as this repository.
-
-Run BookRAG first. A-RAG does not parse PDFs itself and consumes the MinerU markdown produced by BookRAG, ensuring both baselines see the same document text.
-
-### Shared baseline prerequisites
-
-Complete the main repository setup and download FinanceBench before setting up either baseline:
-
-```bash
-uv sync --dev
-cp env_example.txt .env
-# Set OPENAI_API_KEY in .env.
-uv run python scripts/fetch_bench_data.py
-```
-
-The resulting layout must contain:
-
-```text
-agentic-rag-toc/
-|-- .env
-|-- datasets/finance_bench/
-|   |-- ground truth/
-|   `-- pdfs/
-|-- BookRAG/
-`-- arag/
-```
-
-The first baseline run downloads local embedding, reranking, and PDF-processing models. BookRAG graph construction also makes OpenAI requests and can use substantially more tokens than answer generation, so start with the smoke workflow.
+PageIndex writes timestamped predictions to `results/financebench/pageindex/` and keeps its local workspace under `.benchmark_artifacts/pageindex/workspace/`.
 
 ### BookRAG
 
-The setup script clones the pinned [BookRAG](https://github.com/sam234990/BookRAG) commit, installs the local harness from [`baselines/bookrag/`](baselines/bookrag/README.md), links the root `.env`, creates the Python environment, and runs the dependency/data check:
+The bootstrap script clones the pinned [BookRAG](https://github.com/sam234990/BookRAG) revision, installs the [`baselines/bookrag/`](baselines/bookrag/README.md) overlay, links `.env`, creates its environment, and validates the FinanceBench data:
 
 ```bash
-export ARAG_TOC="$(pwd)"
-export FINANCEBENCH_DIR="$ARAG_TOC"
 ./scripts/setup_bookrag.sh
-cd BookRAG
+make -C BookRAG smoke FINANCEBENCH_DIR="$(pwd)"
 ```
 
-The script is safe to rerun when `BookRAG/` is already at the expected commit. It refuses to switch an existing checkout at another commit. Use `./scripts/setup_bookrag.sh --prepare-only` to clone and install the overlay without creating the environment, or pass a destination as the final argument to install outside the repository. The equivalent manual process is documented in the baseline README.
+The smoke test uses one question from the shortest eligible document, the four-page `FOOTLOCKER_2022_8K_dated-2022-05-20`. Its prediction is written to `BookRAG/results/financebench/bookrag-smoke/gpt-4o-mini/predictions.json`.
 
-Run the shortest available FinanceBench case first:
+After the smoke test succeeds, run the full baseline:
 
 ```bash
-make smoke FINANCEBENCH_DIR="$FINANCEBENCH_DIR"
+make -C BookRAG index DOCS=all FINANCEBENCH_DIR="$(pwd)"
+make -C BookRAG answer MODEL=gpt-4o-mini
+make -C BookRAG judge MODEL=gpt-4o-mini ARAG_TOC="$(pwd)"
 ```
 
-The smoke test uses the four-page `FOOTLOCKER_2022_8K_dated-2022-05-20` document and one question. It writes:
+BookRAG uses local `Qwen/Qwen3-Embedding-0.6B` and `Qwen/Qwen3-Reranker-0.6B`; OpenAI is used for graph and answer generation. Graph construction can use substantially more tokens than answering. Set `MINERU_DEVICE=cpu`, `mps`, or `cuda` to override automatic MinerU device selection.
 
-```text
-BookRAG/runs/financebench_qwen_smoke/
-BookRAG/results/financebench/bookrag-smoke/gpt-4o-mini/predictions.json
-```
-
-Run the full BookRAG baseline after the smoke test succeeds:
-
-```bash
-make index DOCS=all FINANCEBENCH_DIR="$FINANCEBENCH_DIR"
-make answer MODEL=gpt-4o-mini
-make judge MODEL=gpt-4o-mini ARAG_TOC="$ARAG_TOC"
-```
-
-`make index` builds the FinanceBench dataset, parses PDFs with local MinerU, constructs the graph, and indexes with local Qwen embeddings. `make answer` reuses those indexes and exports `results/financebench/bookrag/gpt-4o-mini/predictions.json`. To force MinerU to a specific backend, pass `MINERU_DEVICE=cpu`, `mps`, or `cuda`.
-
-The standard profile uses `Qwen/Qwen3-Embedding-0.6B` and `Qwen/Qwen3-Reranker-0.6B`. The smoke target uses the smaller cached-compatible `BAAI/bge-reranker-base` while retaining Qwen embeddings. OpenAI is used for graph and answer generation.
+The setup script is safe to rerun at the pinned revision. It also supports `--prepare-only` and a custom destination; see the [BookRAG harness README](baselines/bookrag/README.md) for manual setup and configuration details.
 
 ### A-RAG
 
-From the repository root, use the setup script to clone the pinned [A-RAG](https://github.com/Ayanami0730/arag) commit, install the local harness from [`baselines/arag/`](baselines/arag/README.md), link `.env`, install dependencies, and check the FinanceBench and BookRAG smoke paths:
+After BookRAG has produced MinerU markdown, clone and configure the pinned [A-RAG](https://github.com/Ayanami0730/arag) revision with its [`baselines/arag/`](baselines/arag/README.md) overlay:
 
 ```bash
-cd /path/to/agentic-rag-toc
 ./scripts/setup_arag.sh
-```
-
-The script is safe to rerun when `arag/` is already at the expected commit. Use `./scripts/setup_arag.sh --prepare-only` to clone and install the overlay without creating the environment. The equivalent manual process is documented in the baseline README.
-
-After the BookRAG smoke test, point A-RAG at its MinerU output and run the matching one-case smoke test:
-
-```bash
-make -C arag check \
-  FINANCEBENCH_DIR="$(pwd)" \
-  BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench_qwen_smoke"
 make -C arag smoke \
   FINANCEBENCH_DIR="$(pwd)" \
   BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench_qwen_smoke"
 ```
 
-The A-RAG smoke output is:
+The smoke prediction is written to `arag/results/financebench/arag-smoke/gpt-4o-mini/predictions.json`.
 
-```text
-arag/results/financebench/arag-smoke/gpt-4o-mini/predictions.json
-```
-
-For a full run, use the standard BookRAG run directory and keep indexing separate from answering so the same frozen index can be reused across answer models:
+For the full baseline, use BookRAG's full run directory:
 
 ```bash
 make -C arag index DOCS=all \
@@ -252,11 +206,20 @@ make -C arag answer MODEL=gpt-4o-mini
 make -C arag judge MODEL=gpt-4o-mini ARAG_TOC="$(pwd)"
 ```
 
-`DEVICE=auto` selects CUDA, then MPS, then CPU. Override it with `DEVICE=cuda`, `cuda:0`, `mps`, or `cpu`. A-RAG writes resumable JSONL during answering and exports the validated artifact to `arag/results/financebench/arag/<model>/predictions.json`.
+`DEVICE=auto` selects CUDA, then MPS, then CPU. A-RAG writes resumable answer rows and exports validated predictions to `arag/results/financebench/arag/<model>/predictions.json`. The setup script is idempotent and supports `--prepare-only`; see the [A-RAG harness README](baselines/arag/README.md) for manual setup and endpoint configuration.
 
-### Baseline evaluation
+### Shared Evaluation
 
-Each `make judge` command invokes this repository's `postprocessing.evaluator`, using `gpt-5.4-mini` by default. Override it with `JUDGE_MODEL=<model>` and control concurrency with `PARALLEL=<n>`. The resulting `qa_eval_<timestamp>.json` artifacts use the same schema as the main benchmark and PageIndex results.
+BookRAG and A-RAG provide `make judge` targets. To evaluate a PageIndex artifact directly, run:
+
+```bash
+uv run python -m postprocessing.evaluator \
+  results/financebench/pageindex/predictions_<timestamp>.json \
+  --parallel 4 \
+  --judge-model gpt-5.4-mini
+```
+
+All three paths use `postprocessing.evaluator`. Their `qa_eval_<timestamp>.json` artifacts share the main benchmark's result schema. Override the Make targets with `JUDGE_MODEL=<model>` and `PARALLEL=<n>` when needed.
 
 ## Output Locations
 

@@ -1,8 +1,8 @@
-# A-RAG FinanceBench baseline
+# A-RAG FinanceBench Baseline
 
 Local macOS/Linux reproduction harness for running [A-RAG](https://github.com/Ayanami0730/arag) on FinanceBench. Embedding and indexing support CUDA, Apple MPS, and CPU. Answering uses an OpenAI-compatible endpoint, which may be cloud-hosted or local.
 
-## Setup
+## Automated Setup
 
 Requirements: `git`, `uv`, FinanceBench data, and BookRAG MinerU markdown for the selected documents.
 
@@ -14,7 +14,9 @@ From the `agentic-rag-toc` repository root, run:
 
 The script clones and pins A-RAG, copies this overlay, links the repository `.env`, installs dependencies, and checks the root FinanceBench data plus BookRAG's smoke output. It is safe to rerun. Use `./scripts/setup_arag.sh --prepare-only` to skip dependency installation and checks.
 
-The equivalent manual setup is:
+## Manual Setup
+
+Run these commands from the `agentic-rag-toc` root:
 
 ```bash
 git clone https://github.com/Ayanami0730/arag.git arag
@@ -32,10 +34,14 @@ Configure `OPENAI_API_KEY`, or `ARAG_API_KEY` and `ARAG_BASE_URL`, in the root `
 ## Run
 
 ```bash
-make -C arag smoke BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench_qwen_smoke"
-make -C arag index DOCS=all BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench"
+make -C arag smoke \
+  FINANCEBENCH_DIR="$(pwd)" \
+  BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench_qwen_smoke"
+make -C arag index DOCS=all \
+  FINANCEBENCH_DIR="$(pwd)" \
+  BOOKRAG_RUNS_DIR="$(pwd)/BookRAG/runs/financebench"
 make -C arag answer MODEL=gpt-4o-mini
-make -C arag judge
+make -C arag judge MODEL=gpt-4o-mini ARAG_TOC="$(pwd)"
 ```
 
 Useful alternatives:
