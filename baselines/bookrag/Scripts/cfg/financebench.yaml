@@ -1,0 +1,7 @@
+# Dataset config for the full FinanceBench set. The Makefile launches main.py
+# from the BookRAG clone root, so these paths are clone-root-relative. Build the
+# dataset first with `make dataset DOCS=all`. The smoke config next to this one
+# uses the shortest one-case document.
+dataset_path: datasets/financebench.json
+working_dir: runs/financebench
+dataset_name: financebench

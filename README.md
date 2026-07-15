@@ -178,20 +178,16 @@ The first baseline run downloads local embedding, reranking, and PDF-processing 
 
 ### BookRAG
 
-The patched BookRAG harness lives in [`BookRAG/`](BookRAG/README.md) and targets upstream commit `113298f919c701d07807ceccb96ed3c18d348117`. Verify the checkout, create its Python 3.12 environment, share the root credentials, and validate the machine:
+The setup script clones the pinned [BookRAG](https://github.com/sam234990/BookRAG) commit, installs the local harness from [`baselines/bookrag/`](baselines/bookrag/README.md), links the root `.env`, creates the Python environment, and runs the dependency/data check:
 
 ```bash
 export ARAG_TOC="$(pwd)"
 export FINANCEBENCH_DIR="$ARAG_TOC"
-
-git -C BookRAG rev-parse HEAD
+./scripts/setup_bookrag.sh
 cd BookRAG
-ln -sf ../.env .env
-make setup
-make check FINANCEBENCH_DIR="$FINANCEBENCH_DIR"
 ```
 
-The printed commit must be `113298f919c701d07807ceccb96ed3c18d348117`. `make setup` applies `upstream.patch` idempotently and installs the local dependencies into `BookRAG/.venv`.
+The script is safe to rerun when `BookRAG/` is already at the expected commit. It refuses to switch an existing checkout at another commit. Use `./scripts/setup_bookrag.sh --prepare-only` to clone and install the overlay without creating the environment, or pass a destination as the final argument to install outside the repository. The equivalent manual process is documented in the baseline README.
 
 Run the shortest available FinanceBench case first:
 
