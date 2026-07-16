@@ -1,0 +1,5 @@
+# Dataset config for the shortest FinanceBench smoke document. The generated
+# dataset contains one case and the working directory is isolated from full runs.
+dataset_path: datasets/financebench_smoke.json
+working_dir: runs/financebench_qwen_smoke
+dataset_name: financebench

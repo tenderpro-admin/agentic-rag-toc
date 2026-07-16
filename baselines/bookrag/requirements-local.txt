@@ -1,0 +1,6 @@
+-r requirements.txt
+mineru[core]==2.1.11
+ftfy
+dill
+omegaconf
+litellm

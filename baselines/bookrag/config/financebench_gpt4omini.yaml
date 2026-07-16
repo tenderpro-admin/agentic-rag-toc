@@ -1,0 +1,95 @@
+# BookRAG (gbc) config for FinanceBench on gpt-4o-mini.
+# Adapted from config/gbc.yaml for a local workstation setup:
+#   - LLM + VLM -> OpenAI
+#   - embeddings + reranking -> local Qwen 0.6B models on CUDA, MPS, or CPU
+#   - MinerU -> local "pipeline" backend (no sglang server)
+# API key is read from the OPENAI_API_KEY env var (provider patch); never stored here.
+
+pdf_path: null   # set per-document by main.py from the dataset
+save_path: null  # set per-document by main.py (working_dir/doc_uuid)
+
+llm:
+  model_name: gpt-4o-mini
+  api_key: env
+  api_base: https://api.openai.com/v1
+  backend: openai
+  max_tokens: 5000
+  temperature: 0.1
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
+  max_workers: 4
+
+vlm:
+  model_name: gpt-4o-mini
+  api_key: env
+  api_base: https://api.openai.com/v1
+  temperature: 0.1
+  max_tokens: 4000
+  backend: gpt
+
+index:
+  chunk_size: 512
+  overlap: 50
+
+mineru:
+  backend: pipeline
+  method: auto
+  server_url: http://localhost:30000
+  # MinerU 2.1.11's bundled Chinese detector/document recognizer also handles
+  # the English text and digits in FinanceBench PDFs without a missing model.
+  lang: ch
+
+tree:
+  node_keywords: True
+  node_summary: True
+  use_vlm: False
+
+graph:
+  extractor_type: "llm"
+  local_model_name: "en_core_web_sm"
+  image_description_force: False
+  max_gleaning: 0
+  refine_type: "advanced"
+  embedding_config:
+    model_name: Qwen/Qwen3-Embedding-0.6B
+    backend: local
+    max_length: 8192
+    device: "auto"
+  reranker_config:
+    model_name: Qwen/Qwen3-Reranker-0.6B
+    max_length: 4096
+    device: "auto"
+    backend: local
+
+vdb:
+  mm_embedding: False
+  vdb_dir_name: "Tree_vdb"
+  collection_name: "TreeVDB"
+  force_rebuild: True
+  embedding_config:
+    model_name: Qwen/Qwen3-Embedding-0.6B
+    backend: local
+    max_length: 8192
+    device: "auto"
+
+index_type: "gbc"
+rag_force_reprocess: True
+
+rag:
+  strategy: gbc
+  variant: standard
+  topk: 10
+  sim_threshold_e: 0.3
+  select_depth: 2
+  max_retry: 2
+  reranker_config:
+    model_name: Qwen/Qwen3-Reranker-0.6B
+    max_length: 4096
+    device: "auto"
+    backend: local
+  mm_reranker_config:
+    type: "text"
+    model_name: Qwen/Qwen3-Embedding-0.6B
+    backend: local
+    max_length: 8192
+    device: "auto"
