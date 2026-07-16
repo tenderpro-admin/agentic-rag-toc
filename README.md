@@ -210,7 +210,7 @@ make -C arag judge MODEL=gpt-4o-mini ARAG_TOC="$(pwd)"
 
 ### Shared Evaluation
 
-BookRAG and A-RAG provide `make judge` targets. To evaluate a PageIndex artifact directly, run:
+The main ARAG-TOC runner and all three baselines produce prediction artifacts accepted by `postprocessing.evaluator`. The predictions file is the only positional input that changes between methods:
 
 ```bash
 uv run python -m postprocessing.evaluator \
@@ -219,11 +219,20 @@ uv run python -m postprocessing.evaluator \
   --judge-model gpt-5.4-mini
 ```
 
-All three paths use `postprocessing.evaluator`. Their `qa_eval_<timestamp>.json` artifacts share the main benchmark's result schema. Override the Make targets with `JUDGE_MODEL=<model>` and `PARALLEL=<n>` when needed.
+All paths use `postprocessing.evaluator`. Their `qa_eval_<timestamp>.json` artifacts share the main benchmark's result schema. Override the Make targets with `JUDGE_MODEL=<model>` and `PARALLEL=<n>` when needed.
 
 ## Output Locations
 
-Defaults:
+Prediction locations:
+
+| Method | Standard predictions | Smoke predictions |
+| --- | --- | --- |
+| ARAG-TOC | `results/financebench/open_source/<run_timestamp>/predictions_<timestamp>.json` | Same path pattern with a one-case run timestamp |
+| PageIndex | `results/financebench/pageindex/predictions_<timestamp>.json` | Same path with `--limit 1` |
+| BookRAG | `BookRAG/results/financebench/bookrag/<model>/predictions.json` | `BookRAG/results/financebench/bookrag-smoke/<model>/predictions.json` |
+| A-RAG | `arag/results/financebench/arag/<model>/predictions.json` | `arag/results/financebench/arag-smoke/<model>/predictions.json` |
+
+ARAG-TOC defaults:
 
 - SQLite DB: `.benchmark_artifacts/financebench/open_source/benchmark.sqlite`
 - Results directory: `results/financebench/open_source/`
