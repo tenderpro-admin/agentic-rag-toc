@@ -15,11 +15,12 @@ from typing import Any
 from pydantic import BaseModel
 
 from app_platform.config import Config
-from document_ingestion.document_toc_store import load_document_tocs
+from document_ingestion.document_toc_store import ensure_toc_section_index, load_document_tocs
 from document_ingestion.rag_indexing import IndexingMixin
 from ..rag_tools_parts import SubmitAnswerValidator, ToolContext
 from .answer_workflow import AgenticAnswerWorkflow, AgenticWorkflowDeps
 from .pipeline import PipelineMixin
+from .shared_embedder import SharedEmbedder
 from .state import AgenticRuntimeContext, UsageReport, UsageTotals
 
 
@@ -33,10 +34,11 @@ class DocAnalyzer(
         self,
         database_url: str,
         embedding_model: str | None = None,
+        embedding_runtime: SharedEmbedder | None = None,
     ):
         """Initialize analyzer with Haystack components."""
-        self._init_config(embedding_model)
-        self._init_components(database_url)
+        self._init_config(embedding_model, embedding_runtime)
+        self._init_components(database_url, embedding_runtime)
         self.current_source_paths: list[str] = []
         self._token_usage_totals = UsageTotals()
         self._token_lock = threading.Lock()
@@ -51,10 +53,18 @@ class DocAnalyzer(
     def _init_config(
         self,
         embedding_model: str | None,
+        embedding_runtime: SharedEmbedder | None,
     ) -> None:
         """Initialize configuration."""
         self.answer_model = Config.get_answer_model()
-        self.embedding_model = embedding_model or Config.EMBEDDING_MODEL
+        if embedding_runtime is not None:
+            if embedding_model is not None and embedding_model != embedding_runtime.model:
+                raise ValueError(
+                    "embedding_model conflicts with the injected embedding runtime model"
+                )
+            self.embedding_model = embedding_runtime.model
+        else:
+            self.embedding_model = embedding_model or Config.EMBEDDING_MODEL
 
     def answer_question(
         self,
@@ -101,11 +111,22 @@ class DocAnalyzer(
         """Build the per-question tool context for one agentic answer run."""
         return ToolContext(
             document_store=self.document_store,
-            embedder=self.embedder,
+            embedding_runtime=self.embedding_runtime,
             standalone_retriever=self._standalone_retriever,
             keyword_retriever=self._standalone_keyword_retriever,
+            toc_section_store=self.toc_section_store,
+            toc_section_retriever=self._toc_section_retriever,
+            toc_section_keyword_retriever=self._toc_section_keyword_retriever,
             current_source_paths=set(self.current_source_paths),
-            load_toc_fn=load_document_tocs,
+            load_toc_fn=lambda source_paths: load_document_tocs(source_paths, self.database_url_str),
+            database_url=self.database_url_str,
+            ensure_toc_sections_fn=lambda: ensure_toc_section_index(
+                database_url=self.database_url_str,
+                source_paths=set(self.current_source_paths),
+                document_store=self.document_store,
+                toc_section_store=self.toc_section_store,
+                embedding_runtime=self.embedding_runtime,
+            ),
             retrieval_filters={
                 "operator": "AND",
                 "conditions": [

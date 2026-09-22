@@ -17,6 +17,7 @@ Output notes:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from haystack import Document
 
@@ -61,7 +62,9 @@ class RetrievalToolsMixin:
         query: str,
         filters: FilterPayload,
     ) -> list[Document]:
-        emb_result = self._ctx.embedder.run(text=query[: Config.MAX_EMBED_CHARS])
+        emb_result = self._ctx.embedding_runtime.embed_query(
+            query[: Config.MAX_EMBED_CHARS]
+        )
         semantic_result = self._ctx.standalone_retriever.run(
             query_embedding=emb_result["embedding"],
             filters=filters,
@@ -88,6 +91,28 @@ class RetrievalToolsMixin:
                 "No valid chunk IDs found. "
                 "Expected format: 'source_path::chunk_index' (e.g. 'datasets/spec.pdf::42')."
             )
+
+        current_paths = {
+            str(Path(source_path).expanduser().resolve()): source_path
+            for source_path in self._ctx.current_source_paths
+        }
+        out_of_scope = sorted(
+            source_path
+            for source_path in {source_path for source_path, _ in requested}
+            if source_path not in self._ctx.current_source_paths
+            and str(Path(source_path).expanduser().resolve()) not in current_paths
+        )
+        if out_of_scope:
+            return "Chunk IDs outside the current document scope: " + ", ".join(out_of_scope)
+        requested = [
+            (
+                current_paths.get(
+                    str(Path(source_path).expanduser().resolve()), source_path
+                ),
+                chunk_index,
+            )
+            for source_path, chunk_index in requested
+        ]
 
         by_key = build_window_index_map(requested, before=before, after=after)
 
@@ -143,7 +168,9 @@ class RetrievalToolsMixin:
         top_k = Config.RAG_TOP_K
 
         scoped_filters, scope_label = self._build_scoped_filters(
-            tool_input, self._ctx.retrieval_filters
+            tool_input,
+            self._ctx.retrieval_filters,
+            allow_section_scope=Config.AGENTIC_HYBRID_SEARCH_SECTION_SCOPING_ENABLED,
         )
 
         semantic_docs: list[Document] = []

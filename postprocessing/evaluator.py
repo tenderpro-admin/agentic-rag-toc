@@ -255,7 +255,16 @@ def evaluate_predictions_file(
     from eval.qa.qa_output import print_summary, save_results
 
     prediction_path = Path(json_file_path).expanduser().resolve()
+    if prediction_path.suffix == ".jsonl":
+        try:
+            rows = [json.loads(line) for line in prediction_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except json.JSONDecodeError:
+            rows = []
+        if rows and all(isinstance(row, dict) and set(row) == {"question_id", "prediction"} for row in rows):
+            raise ValueError("XL-DocBench JSONL submissions are export-only and cannot be post-hoc judged")
     metadata, prediction_results = _load_results_payload(str(prediction_path))
+    if metadata.get("benchmark_source") == "xl-docbench":
+        raise ValueError("XL-DocBench artifacts are export-only and cannot be post-hoc judged")
     if not prediction_results:
         raise ValueError(f"No prediction results found in {prediction_path}")
 
@@ -271,7 +280,6 @@ def evaluate_predictions_file(
         results_dir=results_dir or str(prediction_path.parent),
         group_by_run=False,
         extra_metadata={
-            "benchmark_source": metadata.get("benchmark_source"),
             "source_predictions_file": str(prediction_path),
             "source_prediction_timestamp": metadata.get("timestamp"),
             "source_prediction_model": metadata.get("model"),

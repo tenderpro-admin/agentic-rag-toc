@@ -219,6 +219,7 @@ __marimo__/
 
 /datasets
 /results
+/tasks
 .benchmark_artifacts/*
 /benchmark_cache
 benchmark.sqlite
@@ -234,3 +235,4 @@ first_prompt*.txt
 .DS_Store
 /BookRAG/
 /arag/
+financebench.sqlite

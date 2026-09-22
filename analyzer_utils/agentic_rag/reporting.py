@@ -17,7 +17,7 @@ from .constants import (
 from .state import UsageTotals, WorkflowState
 
 
-FALLBACK_STRUCTURED_TITLE = "Information not found in the provided documents."
+FALLBACK_STRUCTURED_TITLE = "Not answerable."
 FALLBACK_STRUCTURED_CONFIDENCE = "low"
 _MISSING = object()
 

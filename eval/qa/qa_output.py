@@ -26,7 +26,7 @@ from .qa_types import (
 def _write_json(path: str, payload: dict[str, Any]) -> None:
     """Write payload to path as indented UTF-8 JSON."""
     with open(path, "w", encoding="utf-8") as file_handle:
-        json.dump(payload, file_handle, ensure_ascii=False, indent=JSON_INDENT)
+        json.dump(payload, file_handle, ensure_ascii=False, indent=JSON_INDENT, default=str)
 
 
 def _build_agentic_config_snapshot() -> dict[str, Any]:
@@ -273,3 +273,98 @@ def save_predictions(
             "cases": agentic_logs,
         })
         print(f"Agentic RAG logs saved to: {log_file}")
+
+
+def save_xl_artifacts(
+    cases: list[dict[str, Any]],
+    *,
+    results_dir: str | None,
+    commit: str | None,
+    run_status: str,
+    elapsed: float,
+    preflight_failures: list[dict[str, str]] | None = None,
+    resume_source: str | None = None,
+    selection: dict[str, Any] | None = None,
+    skipped_cases: list[dict[str, Any]] | None = None,
+    candidate_count: int | None = None,
+    runnable_count: int | None = None,
+    selected_count: int | None = None,
+    benchmark_config: str = "cross_doc",
+) -> tuple[Path | None, Path]:
+    """Write a strict XL submission and its internal debug companion."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = _resolve_output_dir(results_dir, timestamp, group_by_run=True)
+    emitted = [case for case in cases if case.get("prediction") is not None]
+    submission_path: Path | None = None
+    if emitted:
+        submission_path = output_dir / f"predictions_{timestamp}.jsonl"
+        with submission_path.open("w", encoding="utf-8") as file_handle:
+            for case in emitted:
+                file_handle.write(json.dumps({"question_id": case["question_id"], "prediction": case["prediction"]}, ensure_ascii=False) + "\n")
+
+    counts = {
+        "filtered_candidates": candidate_count if candidate_count is not None else len(cases),
+        "runnable_candidates": runnable_count if runnable_count is not None else len(cases),
+        "selected": selected_count if selected_count is not None else len(cases),
+        "skipped": len(skipped_cases or []),
+        "emitted": len(emitted),
+        "direct": sum(case.get("outcome") == "direct" for case in cases),
+        "recovered": sum(case.get("outcome") == "recovered" for case in cases),
+        "recovered_fallback": sum(case.get("outcome") == "recovered_fallback" for case in cases),
+        "explicit_unanswerable": sum(case.get("outcome") == "explicit_unanswerable" for case in cases),
+        "malformed_omitted": sum(case.get("outcome") == "malformed" for case in cases),
+        "runtime_error_omitted": sum(case.get("outcome") == "runtime_error" for case in cases),
+        "carried_forward": sum(case.get("carried_forward", False) for case in cases),
+        "rerun": sum(not case.get("carried_forward", False) for case in cases),
+        "preflight_failures": len(preflight_failures or []),
+        "total_input_tokens": sum(case.get("input_tokens", 0) for case in cases),
+        "total_output_tokens": sum(case.get("output_tokens", 0) for case in cases),
+        "total_cache_read_tokens": sum(case.get("cache_read_tokens", 0) for case in cases),
+        "total_cache_write_tokens": sum(case.get("cache_write_tokens", 0) for case in cases),
+    }
+    debug_path = output_dir / f"xl_debug_{timestamp}.json"
+    _write_json(str(debug_path), {
+        "debug_schema_version": 1,
+        "timestamp": datetime.now().isoformat(),
+        "commit": commit,
+        "benchmark_source": "xl-docbench",
+        "benchmark_config": benchmark_config,
+        "model": Config.get_answer_model(),
+        "embedding_model": Config.EMBEDDING_MODEL,
+        "sqlite_db": (db_url := Config.get_database_url()) and db_url.removeprefix("sqlite:///"),
+        "agentic_config": _build_agentic_config_snapshot(),
+        "run_status": run_status,
+        "exit_code": 0 if run_status in {"completed", "index_only"} else 1,
+        "elapsed_seconds": elapsed,
+        "submission_path": str(submission_path) if submission_path else None,
+        "debug_path": str(debug_path),
+        "resume_source": resume_source,
+        "selection": selection or {},
+        "counts": counts,
+        "preflight_failures": preflight_failures or [],
+        "skipped_cases": skipped_cases or [],
+        "cases": cases,
+    })
+    print(f"\nXL debug saved to: {debug_path}")
+    if submission_path:
+        print(f"XL predictions saved to: {submission_path}")
+    return submission_path, debug_path
+
+
+def print_xl_summary(cases: list[dict[str, Any]], elapsed: float, preflight_failures: int = 0, skipped_cases: list[dict[str, Any]] | None = None, selected_count: int | None = None) -> None:
+    """Report submission outcomes without implying XL correctness scoring."""
+    emitted = sum(case.get("prediction") is not None for case in cases)
+    print("\n" + "=" * 70)
+    print("XL-DOCBENCH PREDICTION SUMMARY")
+    print("=" * 70)
+    print(f"Selected: {selected_count if selected_count is not None else len(cases)} | Emitted: {emitted} | Skipped: {len(skipped_cases or [])} | Preflight failures: {preflight_failures}")
+    for outcome in ("direct", "recovered", "recovered_fallback", "explicit_unanswerable", "malformed", "runtime_error"):
+        print(f"{outcome}: {sum(case.get('outcome') == outcome for case in cases)}")
+    print(
+        "Tokens: "
+        f"{sum(case.get('input_tokens', 0) for case in cases)} input, "
+        f"{sum(case.get('output_tokens', 0) for case in cases)} output, "
+        f"{sum(case.get('cache_read_tokens', 0) for case in cases)} cache read, "
+        f"{sum(case.get('cache_write_tokens', 0) for case in cases)} cache write"
+    )
+    print(f"Time: {elapsed:.1f}s")

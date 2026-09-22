@@ -22,13 +22,16 @@ Output schema notes:
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from haystack import Document
 from haystack.document_stores.types import DuplicatePolicy
 
 from app_platform.config import Config
+from app_platform.source_paths import resolve_local_source_path
 from .docling_indexing import DoclingIndexingMixin
+from .document_toc_store import build_toc_section_documents, publish_document_toc_sections
 
 
 logger = logging.getLogger(__name__)
@@ -38,6 +41,14 @@ LOCAL_SOURCE_KIND = "local"
 
 ChunkItem = dict[str, Any]
 DocMeta = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LocalSource:
+    """Physical input path paired with its repository-relative cache key."""
+
+    local_file_path: str
+    source_path: str
 
 
 class IndexingMixin(DoclingIndexingMixin):
@@ -84,7 +95,7 @@ class IndexingMixin(DoclingIndexingMixin):
         )
 
     def _batch_embed_documents(self, docs: list[Document]) -> list[Document]:
-        """Embed a list of documents in batches using the document embedder.
+        """Embed a list of documents in batches using the embedding runtime.
 
         Chunks are processed in sub-batches to keep embedding requests bounded.
         """
@@ -95,7 +106,7 @@ class IndexingMixin(DoclingIndexingMixin):
         embedded: list[Document] = []
         for i in range(0, len(docs), EMBEDDING_BATCH_SIZE):
             batch = docs[i : i + EMBEDDING_BATCH_SIZE]
-            result = self.document_embedder.run(documents=batch)
+            result = self.embedding_runtime.embed_documents(batch)
             embedded.extend(result["documents"])
 
         logger.info(f"Batch embedded {len(embedded)} chunks")
@@ -113,12 +124,16 @@ class IndexingMixin(DoclingIndexingMixin):
             on_indexing_start: Optional callback fired with the number of documents
                 that will actually be indexed (skipped when all are already cached).
         """
-        self.current_source_paths = file_paths
+        local_sources = [
+            LocalSource(str(physical_path), source_key)
+            for physical_path, source_key in map(resolve_local_source_path, file_paths)
+        ]
+        self.current_source_paths = [source.source_path for source in local_sources]
         logger.info(
-            f"Set current_source_paths to {len(file_paths)} local documents for filtering"
+            f"Set current_source_paths to {len(local_sources)} local documents for filtering"
         )
 
-        paths_to_process = self._filter_cached_documents(file_paths)
+        paths_to_process = self._filter_cached_documents(local_sources)
         if not paths_to_process:
             logger.info("All local documents already cached, skipping processing")
             return
@@ -134,7 +149,7 @@ class IndexingMixin(DoclingIndexingMixin):
             indexed_log_suffix="from local files",
         )
 
-    def _create_documents_from_local_file(self, file_path: str) -> list[Document]:
+    def _create_documents_from_local_file(self, source: LocalSource) -> list[Document]:
         """Create Haystack documents from a local file using Docling only."""
         if not Config.DOCLING_ENABLED:
             raise RuntimeError(
@@ -143,27 +158,27 @@ class IndexingMixin(DoclingIndexingMixin):
             )
 
         return self._create_structured_documents(
-            file_path,
+            source.local_file_path,
             source_kind=LOCAL_SOURCE_KIND,
-            source_path=file_path,
+            source_path=source.source_path,
         )
 
-    def _filter_cached_documents(self, source_paths: list[str]) -> list[str]:
+    def _filter_cached_documents(self, sources: list[LocalSource]) -> list[LocalSource]:
         """Filter out documents that are already indexed."""
-        paths_to_process: list[str] = []
+        paths_to_process: list[LocalSource] = []
         cached_count = 0
 
-        for source_path in source_paths:
+        for source in sources:
             try:
-                if self._is_document_cached(source_path):
+                if self._is_document_cached(source.source_path):
                     cached_count += 1
-                    logger.debug(f"Document already cached: {source_path}")
+                    logger.debug(f"Document already cached: {source.local_file_path}")
                     continue
 
-                paths_to_process.append(source_path)
+                paths_to_process.append(source)
             except Exception as e:
-                logger.warning(f"Cache check failed for {source_path}: {e}")
-                paths_to_process.append(source_path)
+                logger.warning(f"Cache check failed for {source.local_file_path}: {e}")
+                paths_to_process.append(source)
 
         if cached_count:
             logger.info(f"Found {cached_count} documents already in cache")
@@ -172,8 +187,8 @@ class IndexingMixin(DoclingIndexingMixin):
 
     def _process_and_index_items(
         self,
-        item_keys: list[str],
-        create_documents_fn: Callable[[str], list[Document]],
+        item_keys: list[Any],
+        create_documents_fn: Callable[[Any], list[Document]],
         processing_label: str,
         item_label: str,
         indexed_log_suffix: str = "",
@@ -194,14 +209,34 @@ class IndexingMixin(DoclingIndexingMixin):
                 docs = create_documents_fn(item_key)
                 if docs:
                     docs = self._batch_embed_documents(docs)
+                    pending_toc = getattr(self, "_pending_tocs", {}).get(item_key.source_path)
+                    toc_documents = []
+                    if pending_toc:
+                        source_kind, _, toc_output = pending_toc
+                        toc_documents = build_toc_section_documents(
+                            source_kind, item_key.source_path, toc_output
+                        )
+                        toc_documents = self._batch_embed_documents(toc_documents)
                     self.document_store.write_documents(docs, policy=DuplicatePolicy.SKIP)
+                    if pending_toc:
+                        source_kind, source_name, toc_output = pending_toc
+                        publish_document_toc_sections(
+                            database_url=self.database_url_str,
+                            toc_section_store=self.toc_section_store,
+                            source_kind=source_kind,
+                            source_path=item_key.source_path,
+                            source_name=source_name,
+                            toc_output=toc_output,
+                            documents=toc_documents,
+                        )
+                        self._pending_tocs.pop(item_key.source_path, None)
                     total_docs += len(docs)
-                    successful_files.append(item_key)
-                    logger.info(f"Indexed {len(docs)} chunks for {item_key}")
+                    successful_files.append(str(item_key))
+                    logger.info(f"Indexed {len(docs)} chunks for {item_key.local_file_path}")
             except Exception as e:
-                failed_files.append(item_key)
+                failed_files.append(str(item_key))
                 logger.error(
-                    f"Failed to process {item_label} {item_key}: {e}",
+                    f"Failed to process {item_label} {item_key.local_file_path}: {e}",
                     exc_info=True,
                 )
 

@@ -20,12 +20,15 @@ import logging
 import math
 import re
 import sqlite3
-from pathlib import Path
+from collections import defaultdict
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from haystack import Document, component
 from haystack.document_stores.types import DuplicatePolicy
 from sqlalchemy.engine import make_url
+
+from app_platform.source_paths import resolve_local_source_path
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,7 @@ _FILTER_COLUMN_MAP = {
     "meta.section_id": "section_id",
     "meta.section_title": "section_title",
 }
+_SOURCE_PATH_SCHEMA_VERSION = 1
 
 
 def _require_sqlite_database_url(database_url: str) -> None:
@@ -167,6 +171,14 @@ def _normalize_document_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     return dict(meta or {})
 
 
+def _canonical_json(value: str, *, description: str) -> str:
+    """Return stable JSON for migration comparisons, rejecting malformed rows."""
+    try:
+        return json.dumps(json.loads(value), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Cannot migrate {description}: invalid JSON") from exc
+
+
 def _row_to_document(row: sqlite3.Row, *, score: float | None = None) -> Document:
     meta = _normalize_document_meta(
         json.loads(row["meta_json"]) if row["meta_json"] else {}
@@ -289,6 +301,16 @@ class SQLiteDocumentStore:
                 )
                 """
             )
+            if self.table_name == "toc_section_documents":
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS toc_section_index_state (
+                        source_path TEXT PRIMARY KEY,
+                        toc_revision TEXT NOT NULL,
+                        section_count INTEGER NOT NULL
+                    )
+                    """
+                )
             conn.execute(
                 f"CREATE INDEX IF NOT EXISTS idx_{self.table_name}_source_path ON {self.table_name} (source_path)"
             )
@@ -316,6 +338,187 @@ class SQLiteDocumentStore:
             except sqlite3.OperationalError as exc:
                 self._fts_available = False
                 logger.warning("SQLite FTS5 unavailable, keyword retrieval will use LIKE: %s", exc)
+
+            self._migrate_source_paths(conn)
+
+    @staticmethod
+    def _legacy_source_key(source_path: str) -> str:
+        """Map a legacy absolute local path to the portable cache key it proves."""
+        normalized_path = source_path.replace("\\", "/")
+        is_native_absolute = Path(source_path).is_absolute()
+        if not is_native_absolute and not PureWindowsPath(source_path).is_absolute():
+            return normalized_path
+        if is_native_absolute:
+            try:
+                _, source_key = resolve_local_source_path(source_path)
+                return source_key
+            except ValueError:
+                pass
+        marker = "/datasets/"
+        if marker in normalized_path:
+            suffix = normalized_path.split(marker, maxsplit=1)[1]
+            if suffix:
+                return f"datasets/{suffix}"
+        raise ValueError(
+            "Cannot migrate local source path without a repository-relative identity: "
+            f"{source_path}"
+        )
+
+    @staticmethod
+    def _document_payload(row: sqlite3.Row, target_path: str) -> str:
+        try:
+            meta = json.loads(row["meta_json"])
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Cannot migrate document {row['id']}: invalid metadata JSON") from exc
+        if not isinstance(meta, dict):
+            raise ValueError(f"Cannot migrate document {row['id']}: metadata is not an object")
+        meta["source_path"] = target_path
+        payload = {
+            "content": row["content"],
+            "meta_json": json.dumps(meta, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+            "embedding_json": _canonical_json(row["embedding_json"], description=f"document {row['id']} embedding") if row["embedding_json"] else None,
+            "source_kind": row["source_kind"],
+            "source_path": target_path,
+            "chunk_index": row["chunk_index"],
+            "section_id": row["section_id"],
+            "section_title": row["section_title"],
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+    @staticmethod
+    def _toc_payload(row: sqlite3.Row) -> str:
+        payload = {
+            "source_kind": row["source_kind"],
+            "source_name": row["source_name"],
+            "total_sections": row["total_sections"],
+            "total_chunks": row["total_chunks"],
+            "toc_json": _canonical_json(row["toc_json"], description="document TOC"),
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+    @staticmethod
+    def _source_preference(source_path: str, target_path: str) -> tuple[int, str]:
+        if source_path == target_path:
+            return (0, source_path)
+        try:
+            resolve_local_source_path(source_path)
+        except ValueError:
+            return (2, source_path)
+        return (1, source_path)
+
+    def _delete_documents_for_source(self, conn: sqlite3.Connection, source_path: str) -> None:
+        rows = conn.execute(
+            f"SELECT id FROM {self.table_name} WHERE source_kind = 'local' AND source_path = ?",
+            (source_path,),
+        ).fetchall()
+        if self._fts_available:
+            for row in rows:
+                conn.execute(f"DELETE FROM {self.fts_table_name} WHERE id = ?", (row["id"],))
+        conn.execute(
+            f"DELETE FROM {self.table_name} WHERE source_kind = 'local' AND source_path = ?",
+            (source_path,),
+        )
+
+    def _migrate_source_paths(self, conn: sqlite3.Connection) -> None:
+        """Migrate local cache keys atomically without discarding distinct payloads."""
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if version >= _SOURCE_PATH_SCHEMA_VERSION:
+            return
+
+        try:
+            conn.execute("BEGIN")
+            documents = conn.execute(
+                f"SELECT id, content, meta_json, embedding_json, source_kind, source_path, "
+                f"chunk_index, section_id, section_title FROM {self.table_name} "
+                "WHERE source_kind = 'local' AND source_path IS NOT NULL"
+            ).fetchall()
+            tocs = conn.execute(
+                "SELECT source_path, source_kind, source_name, total_sections, total_chunks, toc_json "
+                "FROM document_toc WHERE source_kind = 'local'"
+            ).fetchall()
+
+            source_targets = {
+                str(row["source_path"]): self._legacy_source_key(str(row["source_path"]))
+                for row in [*documents, *tocs]
+            }
+            documents_by_source: dict[str, list[sqlite3.Row]] = defaultdict(list)
+            tocs_by_source: dict[str, sqlite3.Row] = {}
+            for row in documents:
+                documents_by_source[str(row["source_path"])].append(row)
+            for row in tocs:
+                tocs_by_source[str(row["source_path"])] = row
+
+            sources_by_target: dict[str, list[str]] = defaultdict(list)
+            for source_path, target_path in source_targets.items():
+                sources_by_target[target_path].append(source_path)
+
+            for target_path, source_paths in sources_by_target.items():
+                document_sources = [source_path for source_path in source_paths if documents_by_source[source_path]]
+                if document_sources:
+                    retained_document_source = min(
+                        document_sources,
+                        key=lambda source_path: self._source_preference(source_path, target_path),
+                    )
+                    expected_documents = sorted(
+                        self._document_payload(row, target_path)
+                        for row in documents_by_source[retained_document_source]
+                    )
+                    for source_path in document_sources:
+                        if source_path == retained_document_source:
+                            continue
+                        candidate_documents = sorted(
+                            self._document_payload(row, target_path)
+                            for row in documents_by_source[source_path]
+                        )
+                        if candidate_documents != expected_documents:
+                            raise ValueError(
+                                "Cannot migrate colliding local source paths with different cached document payloads: "
+                                f"{retained_document_source} and {source_path} both map to {target_path}"
+                            )
+                        self._delete_documents_for_source(conn, source_path)
+
+                    for row in documents_by_source[retained_document_source]:
+                        meta = json.loads(row["meta_json"])
+                        if not isinstance(meta, dict):
+                            raise ValueError(f"Cannot migrate document {row['id']}: metadata is not an object")
+                        meta["source_path"] = target_path
+                        conn.execute(
+                            f"UPDATE {self.table_name} SET source_path = ?, meta_json = ? WHERE id = ?",
+                            (target_path, _serialize_meta(meta), row["id"]),
+                        )
+
+                toc_sources = [source_path for source_path in source_paths if source_path in tocs_by_source]
+                if not toc_sources:
+                    continue
+                retained_toc_source = min(
+                    toc_sources,
+                    key=lambda source_path: self._source_preference(source_path, target_path),
+                )
+                expected_toc = self._toc_payload(tocs_by_source[retained_toc_source])
+                for source_path in toc_sources:
+                    if source_path == retained_toc_source:
+                        continue
+                    if self._toc_payload(tocs_by_source[source_path]) != expected_toc:
+                        raise ValueError(
+                            "Cannot migrate colliding local source paths with different TOC payloads: "
+                            f"{retained_toc_source} and {source_path} both map to {target_path}"
+                        )
+                    conn.execute(
+                        "DELETE FROM document_toc WHERE source_kind = 'local' AND source_path = ?",
+                        (source_path,),
+                    )
+
+                conn.execute(
+                    "UPDATE document_toc SET source_path = "
+                    "? WHERE source_kind = 'local' AND source_path = ?",
+                    (target_path, retained_toc_source),
+                )
+
+            conn.execute(f"PRAGMA user_version = {_SOURCE_PATH_SCHEMA_VERSION}")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     def write_documents(
         self,
@@ -380,6 +583,64 @@ class SQLiteDocumentStore:
             conn.commit()
 
         return inserted
+
+    def replace_source_documents(
+        self,
+        conn: sqlite3.Connection,
+        source_path: str,
+        documents: list[Document],
+        *,
+        toc_revision: str,
+    ) -> None:
+        """Replace one source's structural records within a caller transaction."""
+        if self.table_name != "toc_section_documents":
+            raise ValueError("Source replacement is only supported for TOC-section documents")
+
+        rows = conn.execute(
+            f"SELECT id FROM {self.table_name} WHERE source_path = ?", (source_path,)
+        ).fetchall()
+        if self._fts_available:
+            for row in rows:
+                conn.execute(f"DELETE FROM {self.fts_table_name} WHERE id = ?", (row["id"],))
+        conn.execute(f"DELETE FROM {self.table_name} WHERE source_path = ?", (source_path,))
+
+        for document in documents:
+            doc_id = _normalize_document_id(document)
+            meta = _normalize_document_meta(document.meta)
+            conn.execute(
+                f"""
+                INSERT INTO {self.table_name} (
+                    id, content, meta_json, embedding_json,
+                    source_kind, source_path, chunk_index, section_id, section_title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    doc_id,
+                    document.content or "",
+                    _serialize_meta(meta),
+                    _serialize_embedding(getattr(document, "embedding", None)),
+                    meta.get("source_kind"),
+                    meta.get("source_path"),
+                    meta.get("chunk_index"),
+                    meta.get("section_id"),
+                    meta.get("section_title"),
+                ),
+            )
+            if self._fts_available:
+                conn.execute(
+                    f"INSERT INTO {self.fts_table_name} (id, content) VALUES (?, ?)",
+                    (doc_id, document.content or ""),
+                )
+        conn.execute(
+            """
+            INSERT INTO toc_section_index_state (source_path, toc_revision, section_count)
+            VALUES (?, ?, ?)
+            ON CONFLICT(source_path) DO UPDATE SET
+                toc_revision = excluded.toc_revision,
+                section_count = excluded.section_count
+            """,
+            (source_path, toc_revision, len(documents)),
+        )
 
     def filter_documents(self, filters: FilterPayload | None = None) -> list[Document]:
         where_clause, params = _compile_filter_clause(filters)

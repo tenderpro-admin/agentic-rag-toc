@@ -59,7 +59,7 @@ TOOL_SPECS: list[ToolSpec] = [
     ),
     _function_tool(
         "get_section",
-        "Retrieve all text chunks from a specific section of a file. More targeted and complete than hybrid_search when you know exactly which section contains the answer. Provide section_id (e.g. 'section_3') or section_title (or both).",
+        "Retrieve all text chunks from a specific section of a file. More targeted and complete than hybrid_search when you know exactly which section contains the answer. Provide the section_id or section_title from get_toc output or a previously returned chunk's [SECTION_ID] or [SECTION] header.",
         {
             "type": "object",
             "properties": {
@@ -69,11 +69,11 @@ TOOL_SPECS: list[ToolSpec] = [
                 },
                 "section_id": {
                     "type": "string",
-                    "description": "Section ID as shown in get_toc output (e.g. 'section_3'). Takes precedence over section_title.",
+                    "description": "Section ID from get_toc output or a returned chunk's [SECTION_ID] header (e.g. 'section_3'). Takes precedence over section_title.",
                 },
                 "section_title": {
                     "type": "string",
-                    "description": "Exact section title as shown in get_toc output. Used when section_id is not available.",
+                    "description": "Exact section title from get_toc output or a returned chunk's [SECTION] header. Used when section_id is not available.",
                 },
             },
             "required": ["file_id"],
@@ -133,6 +133,28 @@ TOOL_SPECS: list[ToolSpec] = [
         },
     ),
     _function_tool(
+        "search_toc",
+        "Discover document sections by searching section titles and hierarchy breadcrumbs. Results provide [FILE_ID] and [SECTION_ID] values that can be passed directly to get_section. It returns structural metadata only, not section text.",
+        {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Conceptual query for semantic title and breadcrumb search.",
+                },
+                "phrase": {
+                    "type": "string",
+                    "description": "Optional keyword phrase for title matching. If omitted, query is reused.",
+                },
+                "file_id": {
+                    "type": "string",
+                    "description": "Optional. Restrict section discovery to an exact source path or partial filename.",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    _function_tool(
         "submit_answer",
         "Submit the final answer once you have gathered sufficient information. Call this when you are confident in your answer, or when further searching would not yield new information.",
         copy.deepcopy(DEFAULT_SUBMIT_ANSWER_INPUT_SCHEMA),
@@ -165,6 +187,21 @@ def build_tool_config(
         )
 
     tools = [copy.deepcopy(supported_tools[tool_name]) for tool_name in Config.AGENTIC_ENABLED_TOOLS]
+    if not Config.AGENTIC_HYBRID_SEARCH_SECTION_SCOPING_ENABLED:
+        for tool in tools:
+            function_spec = tool.get("function", {})
+            if function_spec.get("name") != "hybrid_search":
+                continue
+            function_spec["description"] = (
+                "Run fused retrieval using semantic vector search and BM25 keyword "
+                "search in one call. This is the best default search tool. Results are "
+                "merged with reciprocal-rank fusion and deduplicated by chunk ID. "
+                "Optionally scope to a specific file."
+            )
+            properties = function_spec["parameters"]["properties"]
+            properties.pop("section_id", None)
+            properties.pop("section_title", None)
+            break
     submit_answer_tool_found = False
     for tool in tools:
         function_spec = tool.get("function", {})

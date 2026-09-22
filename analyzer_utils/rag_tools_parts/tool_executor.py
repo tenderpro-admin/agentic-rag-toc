@@ -50,13 +50,18 @@ class ToolContext:
     """References to service infrastructure needed by ToolExecutor."""
 
     document_store: Any
-    embedder: Any
+    embedding_runtime: Any
     standalone_retriever: Any
     keyword_retriever: Any
     current_source_paths: set[str]
     load_toc_fn: Callable[[list[str]], list[dict[str, Any]]]
     retrieval_filters: FilterPayload
     submit_answer_validator: SubmitAnswerValidator | None = None
+    toc_section_store: Any = None
+    toc_section_retriever: Any = None
+    toc_section_keyword_retriever: Any = None
+    database_url: str | None = None
+    ensure_toc_sections_fn: Callable[[], tuple[dict[str, str], set[str]]] | None = None
     max_tool_calls: int = field(default_factory=lambda: Config.AGENTIC_MAX_TOOL_CALLS)
     max_input_tokens: int = field(default_factory=lambda: Config.AGENTIC_MAX_INPUT_TOKENS)
 
@@ -79,6 +84,7 @@ class ToolExecutor(NavigationToolsMixin, RetrievalToolsMixin, ControlToolsMixin)
         all_handlers: dict[str, ToolHandler] = {
             "get_toc": self._get_toc,
             "get_section": self._get_section,
+            "search_toc": self._search_toc,
             "get_chunk_window": self._get_chunk_window,
             "hybrid_search": self._hybrid_search,
             "submit_answer": self._submit_answer,
@@ -231,8 +237,10 @@ class ToolExecutor(NavigationToolsMixin, RetrievalToolsMixin, ControlToolsMixin)
         self,
         tool_input: ToolInput,
         base_filters: FilterPayload,
+        *,
+        allow_section_scope: bool = True,
     ) -> tuple[FilterPayload, str]:
-        """Build retrieval filters narrowed by optional file_id/section scope."""
+        """Build retrieval filters narrowed by optional file and section scope."""
         extra_conditions: list[FilterCondition] = []
         scope_parts: list[str] = []
         file_id = tool_input.get("file_id", "").strip()
@@ -248,10 +256,10 @@ class ToolExecutor(NavigationToolsMixin, RetrievalToolsMixin, ControlToolsMixin)
             else:
                 scope_parts.append(f"file={file_id} (not found, searching all)")
 
-        if section_id:
+        if allow_section_scope and section_id:
             extra_conditions.append(self._eq_condition(FIELD_META_SECTION_ID, section_id))
             scope_parts.append(f"section_id={section_id}")
-        elif section_title and resolved_key:
+        elif allow_section_scope and section_title and resolved_key:
             exact_title = self._resolve_section_title(resolved_key, section_title)
             if exact_title:
                 extra_conditions.append(self._eq_condition(FIELD_META_SECTION_TITLE, exact_title))
@@ -274,8 +282,11 @@ class ToolExecutor(NavigationToolsMixin, RetrievalToolsMixin, ControlToolsMixin)
         """Render one document chunk as a labelled text block."""
         source_path = doc.meta.get("source_path", "")
         chunk_idx = doc.meta.get("chunk_index", "?")
+        section_id = doc.meta.get("section_id", "")
         section_title = doc.meta.get("section_title", "")
         header = f"[CHUNK_ID: {source_path}::{chunk_idx}]"
+        if section_id:
+            header += f" [SECTION_ID: {section_id}]"
         if section_title:
             header += f" [SECTION: {section_title}]"
         return f"{header}\n{doc.content}"

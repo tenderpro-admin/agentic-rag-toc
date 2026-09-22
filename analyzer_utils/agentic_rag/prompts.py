@@ -11,75 +11,108 @@ _NUMERIC_EVIDENCE_INSTRUCTION = (
     "from the evidence whenever they are available."
 )
 
-_agentic_system_prompt_lines = [
-    "You are an agentic finance report QA assistant operating ONLY via tools.",
-    "Read the user question carefully, use all exclusions and instructions given.",
-]
-if Config.AGENTIC_INCLUDE_INITIAL_TOC:
-    _agentic_system_prompt_lines.append(
-        "Available files and document TOCs are listed in the user prompt."
-    )
-else:
-    _agentic_system_prompt_lines.append(
-        "Available files are listed in the user prompt."
-    )
-if "get_toc" in _ENABLED_TOOLS:
-    _agentic_system_prompt_lines.append(
-        "Use get_toc when you need section IDs or document structure for a specific file."
-    )
-if "get_section" in _ENABLED_TOOLS:
-    _agentic_system_prompt_lines.append(
-        "Use get_section for targeted section retrieval when you know the right file or section."
-    )
-if "hybrid_search" in _ENABLED_TOOLS:
-    _agentic_system_prompt_lines.append(
-        "Use hybrid_search as the primary search tool; it supports file_id and section scoping."
-    )
-_agentic_system_prompt_lines.append(
-    "When enough evidence is gathered, call submit_answer with the final answer."
-)
-_agentic_system_prompt_lines.append(_NUMERIC_EVIDENCE_INSTRUCTION)
+def _build_agentic_system_prompt(
+    *,
+    include_initial_toc: bool,
+    enabled_tools: set[str],
+) -> str:
+    """Build navigation guidance consistent with the enabled tool set."""
+    lines = [
+        "You are an agentic finance report QA assistant operating ONLY via tools.",
+        "Read the user question carefully, use all exclusions and instructions given.",
+    ]
+    if include_initial_toc:
+        lines.append("Available files and document TOCs are listed in the user prompt.")
+    else:
+        lines.append("Available files are listed in the user prompt.")
+    if "get_toc" in enabled_tools:
+        lines.append(
+            "Use get_toc when you need section IDs or document structure for a specific file."
+        )
+    if "get_section" in enabled_tools:
+        lines.append(
+            "Use get_section for targeted section retrieval when you know the right file or section."
+        )
+    if "search_toc" in enabled_tools:
+        lines.append(
+            "Use search_toc to discover a structural location, then pass its [FILE_ID] and [SECTION_ID] to get_section for text."
+        )
+    if (
+        not include_initial_toc
+        and "get_toc" not in enabled_tools
+        and "get_section" in enabled_tools
+    ):
+        lines.append(
+            "Without a TOC, do not guess section IDs or titles. First retrieve a relevant chunk, then reuse its [SECTION_ID] (preferred) or exact [SECTION] value with get_section."
+        )
+    if "hybrid_search" in enabled_tools:
+        hybrid_search_scope = "file_id and section scoping"
+        if not Config.AGENTIC_HYBRID_SEARCH_SECTION_SCOPING_ENABLED:
+            hybrid_search_scope = "file_id scoping"
+        lines.append(
+            f"Use hybrid_search as the primary search tool; it supports {hybrid_search_scope}."
+        )
+    lines.append("When enough evidence is gathered, call submit_answer with the final answer.")
+    lines.append(_NUMERIC_EVIDENCE_INSTRUCTION)
 
-_agentic_search_tips = []
-if Config.AGENTIC_INCLUDE_INITIAL_TOC:
-    _agentic_search_tips.append(
-        "- The user prompt already includes each in-scope file's TOC with section IDs, titles, and chunk counts."
-    )
-    _agentic_search_tips.append(
-        "- Use the provided available-files list and TOC blocks to pick a file_id before targeted retrieval."
-    )
-elif "get_toc" in _ENABLED_TOOLS:
-    _agentic_search_tips.append(
-        "- Use get_toc to inspect section IDs, titles, and chunk counts before targeted retrieval."
-    )
-else:
-    _agentic_search_tips.append(
-        "- Use the available-files list to choose a likely file_id before targeted retrieval when file scoping is supported."
-    )
-if "hybrid_search" in _ENABLED_TOOLS:
-    _agentic_search_tips.append(
-        "- hybrid_search already includes BM25 keyword matching internally, so use the 'phrase' parameter for exact terms/codes alongside the semantic query."
-    )
-    _agentic_search_tips.append(
-        "- Use file_id/section_id/section_title parameters on hybrid_search to narrow results to a specific file or section instead of searching all documents."
-    )
-if "get_section" in _ENABLED_TOOLS:
-    _agentic_search_tips.append(
-        "- Use get_section when you already know the relevant file and section."
-    )
-_agentic_search_tips.append(
-    "- This saves tool calls and gives more targeted results."
-)
+    search_tips = []
+    if include_initial_toc:
+        search_tips.append(
+            "- The user prompt already includes each in-scope file's TOC with section IDs, titles, and chunk counts."
+        )
+        search_tips.append(
+            "- Use the provided available-files list and TOC blocks to pick a file_id before targeted retrieval."
+        )
+    elif "get_toc" in enabled_tools:
+        search_tips.append(
+            "- Use get_toc to inspect section IDs, titles, and chunk counts before targeted retrieval."
+        )
+    else:
+        search_tips.append(
+            "- Use the available-files list to choose a likely file_id before targeted retrieval when file scoping is supported."
+        )
+    if "search_toc" in enabled_tools:
+        search_tips.append(
+            "- Use search_toc for section-title or hierarchy discovery; use hybrid_search for content evidence."
+        )
+    if "hybrid_search" in enabled_tools:
+        search_tips.append(
+            "- hybrid_search already includes BM25 keyword matching internally, so use the 'phrase' parameter for exact terms/codes alongside the semantic query."
+        )
+        if Config.AGENTIC_HYBRID_SEARCH_SECTION_SCOPING_ENABLED:
+            search_tips.append(
+                "- Use file_id/section_id/section_title parameters on hybrid_search to narrow results to a specific file or section instead of searching all documents."
+            )
+        else:
+            search_tips.append(
+                "- Use file_id on hybrid_search to narrow results to a specific file instead of searching all documents."
+            )
+    if "get_section" in enabled_tools:
+        if not include_initial_toc and "get_toc" not in enabled_tools:
+            search_tips.append(
+                "- After search returns a chunk, use its [SECTION_ID] to retrieve its full section; do not infer an ID from the title."
+            )
+        else:
+            search_tips.append(
+                "- Use get_section when you already know the relevant file and section."
+            )
+    search_tips.append("- This saves tool calls and gives more targeted results.")
 
-AGENTIC_SYSTEM_PROMPT = (
-    " ".join(_agentic_system_prompt_lines)
-    + "\n\nSEARCH TIPS:\n"
-    + "\n".join(_agentic_search_tips)
-    + "\n\nIMPORTANT:\n"
-    + "- When remaining_iterations <= 2, prioritize concluding with submit_answer.\n"
-    + "- If evidence is insufficient, still call submit_answer with a concise explanation of what was missing.\n"
-    + "- If submit_answer returns a validation error, correct the JSON and call submit_answer again.\n"
-    + "- Do not end your turn with plain assistant text when you can submit the best possible final answer."
+    return (
+        " ".join(lines)
+        + "\n\nSEARCH TIPS:\n"
+        + "\n".join(search_tips)
+        + "\n\nIMPORTANT:\n"
+        + "- When remaining_iterations <= 2, prioritize concluding with submit_answer.\n"
+        + "- If evidence is insufficient, still call submit_answer with a concise explanation of what was missing.\n"
+        + "- If submit_answer returns a validation error, correct the JSON and call submit_answer again.\n"
+        + "- Do not end your turn with plain assistant text when you can submit the best possible final answer."
+    )
+
+
+AGENTIC_SYSTEM_PROMPT = _build_agentic_system_prompt(
+    include_initial_toc=Config.AGENTIC_INCLUDE_INITIAL_TOC,
+    enabled_tools=_ENABLED_TOOLS,
 )
 
 FINAL_SYNTHESIS_SYSTEM_PROMPT = (
