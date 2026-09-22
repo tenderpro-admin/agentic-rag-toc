@@ -34,7 +34,7 @@ uv run python scripts/download_xl_docbench_data.py
 
 This writes `qa_single_doc.jsonl`, `qa_cross_doc.jsonl`, `documents.jsonl`, and
 the reviewed question sets to `datasets/XL-DocBench/ground truth/` in one run:
-`qa_cross_doc_frozen.jsonl` (101 questions) and
+`qa_cross_doc_frozen.jsonl` (94 questions) and
 `qa_single_doc_frozen.jsonl` (473 questions). XL evaluation and deterministic
 scoring use those files, so added or missing PDFs cannot expand the reviewed
 question set. The original downloaded QA files remain unchanged. Use `--dry-run`
