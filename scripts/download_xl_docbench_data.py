@@ -22,7 +22,7 @@ else:
     from freeze_xl_docbench_questions import freeze_xl_docbench_questions
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DATASET_URL = "https://huggingface.co/datasets/anonymous12123/XL-DocBench/resolve/main/data"
+DATASET_URL = "https://huggingface.co/datasets/microsoft/XL-DocBench/resolve/main/data"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "datasets" / "XL-DocBench" / "ground truth"
 DEFAULT_TIMEOUT = 120
 USER_AGENT = "XL-DocBench data downloader"

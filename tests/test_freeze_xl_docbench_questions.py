@@ -14,7 +14,7 @@ def _write_jsonl(path, rows) -> None:
 
 def test_frozen_question_lists_match_the_reviewed_runs() -> None:
     expected = {
-        "cross_doc": (101, "8d7e70c6f055360276b44d5a7b422d7dacac5f00143e75ef357c3f02d6ece348"),
+        "cross_doc": (94, "489be41b5c003b45148ac9f708cf9995a892bb9e495ae140ee1c5f2f69eda65b"),
         "single_doc": (473, "616587fb9376a96733a025ae9cfdc94d10203dfd93027d3c244af4bc15f18c4d"),
     }
 
