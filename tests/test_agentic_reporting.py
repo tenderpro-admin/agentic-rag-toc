@@ -45,7 +45,7 @@ def test_build_fallback_answer_returns_structured_json_for_strict_output() -> No
     parsed = json.loads(fallback)
     parsed_model = DocumentationAnswer(**parsed)
 
-    assert parsed_model.title == "Information not found in the provided documents."
+    assert parsed_model.title == "Not answerable"
     assert parsed_model.interpretation == FALLBACK_ANSWER_BUDGET_EXCEEDED
     assert parsed_model.confidence == "low"
     assert parsed_model.found is False
