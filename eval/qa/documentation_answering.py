@@ -11,9 +11,9 @@ from postprocessing.chunk_resolver import resolve_chunk_ids_to_quotes
 
 logger = logging.getLogger(__name__)
 
-NOT_FOUND_TITLE = "Information not found in the provided documents."
+NOT_FOUND_TITLE = "Not answerable."
 GENERIC_NOT_FOUND_INTERPRETATION = (
-    "Information not found in the provided documents."
+    "Not answerable."
 )
 LOW_CONFIDENCE = "low"
 
@@ -77,7 +77,7 @@ def build_question_prompt(user_question: str) -> str:
         CRITICAL - Setting the 'found' field:
         - Set "found": true if you can answer the question based on the provided documents
         - Set "found": false if the information is NOT available in the provided context
-        - When found is false, you can provide a brief explanation in 'interpretation' (e.g., "Information not found in the provided documents.")
+        - When found is false, you can provide a brief explanation in 'interpretation' (e.g., "Not answerable.")
         - When found is false, the 'sources' list should be empty
 
         IMPORTANT for chunk_id field in sources:

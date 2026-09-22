@@ -26,7 +26,7 @@ XL_DOCBENCH_SINGLE_DOC_QUESTIONS_PATH = XL_DOCBENCH_GT_DIR / "qa_single_doc_froz
 XL_DOCBENCH_DOCUMENTS_PATH = XL_DOCBENCH_GT_DIR / "documents.jsonl"
 XL_DOCBENCH_DEFAULT_CONFIG = "cross_doc"
 XL_DOCBENCH_CONFIGS = ("cross_doc", "single_doc")
-UNANSWERABLE_PREDICTION = "Information not found in the provided documents."
+UNANSWERABLE_PREDICTION = "Not answerable."
 PDF_EOF_MARKER = b"%%EOF"
 PDF_TAIL_BYTES = 1024
 
