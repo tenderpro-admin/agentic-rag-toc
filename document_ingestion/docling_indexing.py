@@ -17,7 +17,6 @@ from typing import Any
 from haystack import Document
 
 from app_platform.config import Config
-from .document_toc_store import save_document_toc
 
 
 logger = logging.getLogger(__name__)
@@ -187,7 +186,8 @@ class DoclingIndexingMixin:
                 chunk=chunk,
             )
 
-        save_document_toc(source_kind, source_path, source_name, toc_output)
+        self._pending_tocs = getattr(self, "_pending_tocs", {})
+        self._pending_tocs[source_path] = (source_kind, source_name, toc_output)
 
         logger.info(
             f"Successfully processed {source_path} via Docling: {len(docs)} chunks"
@@ -244,7 +244,8 @@ class DoclingIndexingMixin:
                 chunk=chunk,
             )
 
-        save_document_toc(source_kind, source_path, Path(source_path).name, toc_output)
+        self._pending_tocs = getattr(self, "_pending_tocs", {})
+        self._pending_tocs[source_path] = (source_kind, Path(source_path).name, toc_output)
 
         logger.info(
             f"Successfully processed {source_path} via structured parsing: {len(docs)} chunks"

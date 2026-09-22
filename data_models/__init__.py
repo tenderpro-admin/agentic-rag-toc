@@ -6,6 +6,9 @@ from importlib import import_module
 _LAZY_EXPORTS = {
     # Documentation
     "DocumentationAnswer": (".documentation", "DocumentationAnswer"),
+    # XL-DocBench
+    "XLDocBenchAnswer": (".xl_docbench", "XLDocBenchAnswer"),
+    "XLDocBenchSource": (".xl_docbench", "XLDocBenchSource"),
 }
 
 

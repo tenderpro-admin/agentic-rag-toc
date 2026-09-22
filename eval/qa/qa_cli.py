@@ -18,15 +18,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Q&A evaluation with LLM-as-a-judge")
     parser.add_argument(
         "--benchmark-source",
-        choices=("financebench",),
+        choices=("financebench", "xl-docbench"),
         default="financebench",
-        help="Load FinanceBench test cases.",
+        help="Load FinanceBench or XL-DocBench test cases.",
     )
     parser.add_argument(
         "--benchmark-config",
         type=str,
         default=None,
-        help="Benchmark config name.",
+        help="Benchmark config name (XL-DocBench supports cross_doc and single_doc).",
     )
     parser.add_argument("--limit", type=int, help="Limit number of test cases")
     parser.add_argument(
@@ -91,7 +91,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--predictions-file",
         type=str,
         default=None,
-        help="Evaluate an existing predictions_<timestamp>.json artifact with the OpenAI judge.",
+        help="Evaluate an existing FinanceBench predictions_<timestamp>.json artifact with the OpenAI judge.",
+    )
+    parser.add_argument(
+        "--xl-predictions-file",
+        type=str,
+        default=None,
+        help="Deterministically score an existing strict XL-DocBench predictions_<timestamp>.jsonl submission.",
     )
     parser.add_argument(
         "--predictions-only",
@@ -110,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help=(
-            "Path to a previous predictions_*.json or qa_eval_*.json file. "
+            "Path to a previous predictions_*.json or qa_eval_*.json file. XL uses xl_debug_*.json. "
             "Already-completed test cases are skipped and their results carried forward."
         ),
     )
@@ -123,10 +129,19 @@ def log_testset_paths(
     results_dir: str | None = None,
 ) -> None:
     """Log configured benchmark directories."""
-    financebench_root = REPO_ROOT / "datasets" / "finance_bench"
-    logger.info("Benchmark source: FinanceBench")
-    logger.info(
-        f"Questions: {financebench_root / 'ground truth' / 'financebench_open_source.jsonl'}"
-    )
-    logger.info(f"PDFs: {financebench_root / 'pdfs'}")
+    if benchmark_source == "xl-docbench":
+        from . import xl_docbench
+
+        config = benchmark_config or xl_docbench.XL_DOCBENCH_DEFAULT_CONFIG
+        logger.info("Benchmark source: XL-DocBench (%s)", config)
+        logger.info("Questions: %s", xl_docbench.get_xl_docbench_questions_path(config))
+        logger.info("Document catalog: %s", xl_docbench.XL_DOCBENCH_DOCUMENTS_PATH)
+        logger.info("PDFs: %s", xl_docbench.XL_DOCBENCH_PDFS_DIR)
+    else:
+        financebench_root = REPO_ROOT / "datasets" / "finance_bench"
+        logger.info("Benchmark source: FinanceBench")
+        logger.info(
+            f"Questions: {financebench_root / 'ground truth' / 'financebench_open_source.jsonl'}"
+        )
+        logger.info(f"PDFs: {financebench_root / 'pdfs'}")
     logger.info(f"Results: {results_dir or RESULTS_DIR}")

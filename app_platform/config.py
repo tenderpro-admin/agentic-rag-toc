@@ -50,6 +50,7 @@ class Config:
     # Static config - RAG Pipeline
     EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "1024"))
     RAG_TOP_K = 5
+    RAG_TOC_TOP_K = 10
     RAG_RETRIEVAL_TOP_K = 30
     RRF_K = 60  # Reciprocal rank fusion constant (standard value)
     MAX_TOKENS = 16384
@@ -86,13 +87,17 @@ class Config:
         "AGENTIC_INCLUDE_INITIAL_TOC",
         "false",
     ).lower() in ("true", "1", "yes")
+    AGENTIC_HYBRID_SEARCH_SECTION_SCOPING_ENABLED = os.getenv(
+        "AGENTIC_HYBRID_SEARCH_SECTION_SCOPING_ENABLED",
+        "true",
+    ).lower() in ("true", "1", "yes")
     AGENTIC_ENABLED_TOOLS = tuple(
         tool_name
         for tool_name in (
             item.strip()
             for item in os.getenv(
                 "AGENTIC_ENABLED_TOOLS",
-                "get_section,get_chunk_window,hybrid_search,submit_answer,get_toc",
+                "get_section,get_chunk_window,hybrid_search,search_toc,submit_answer,get_toc",
             ).split(",")
         )
         if tool_name

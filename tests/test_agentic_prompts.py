@@ -2,6 +2,7 @@ from analyzer_utils.agentic_rag.answer_workflow import _build_initial_prompt_con
 from analyzer_utils.agentic_rag.prompts import (
     AGENTIC_SYSTEM_PROMPT,
     FINAL_SYNTHESIS_SYSTEM_PROMPT,
+    _build_agentic_system_prompt,
     build_agentic_user_prompt,
     build_final_synthesis_user_prompt,
 )
@@ -12,7 +13,7 @@ from app_platform.config import Config
 def _build_tool_context() -> ToolContext:
     return ToolContext(
         document_store=None,
-        embedder=None,
+        embedding_runtime=None,
         standalone_retriever=None,
         keyword_retriever=None,
         current_source_paths={"docs/spec.pdf", "notes/raw.txt"},
@@ -27,11 +28,6 @@ def _build_tool_context() -> ToolContext:
         ],
         retrieval_filters={},
     )
-
-
-def test_agentic_system_prompt_explains_available_files_usage() -> None:
-    assert "Available files are listed in the user prompt" in AGENTIC_SYSTEM_PROMPT
-    assert "explicitly include the key supporting numbers" in AGENTIC_SYSTEM_PROMPT
 
 
 def test_agentic_user_prompt_lists_toc_availability(monkeypatch) -> None:
@@ -89,6 +85,17 @@ def test_agentic_user_prompt_omits_initial_toc_block_when_disabled(
     assert "source_path: docs/spec.pdf" in prompt
 
 
+def test_system_prompt_requires_chunk_metadata_without_toc_navigation() -> None:
+    prompt = _build_agentic_system_prompt(
+        include_initial_toc=False,
+        enabled_tools={"get_section", "get_chunk_window", "hybrid_search", "submit_answer"},
+    )
+
+    assert "do not guess section IDs or titles" in prompt
+    assert "[SECTION_ID] (preferred) or exact [SECTION]" in prompt
+    assert "do not infer an ID from the title" in prompt
+
+
 def test_build_tool_config_filters_tools_from_config(monkeypatch) -> None:
     monkeypatch.setattr(
         Config,
@@ -102,6 +109,20 @@ def test_build_tool_config_filters_tools_from_config(monkeypatch) -> None:
     ]
 
     assert tool_names == ["hybrid_search", "submit_answer"]
+
+
+def test_hybrid_search_omits_section_scope_when_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(Config, "AGENTIC_HYBRID_SEARCH_SECTION_SCOPING_ENABLED", False)
+
+    hybrid_search = next(
+        tool
+        for tool in build_tool_config()["tools"]
+        if tool["function"]["name"] == "hybrid_search"
+    )
+
+    properties = hybrid_search["function"]["parameters"]["properties"]
+    assert "section_id" not in properties
+    assert "section_title" not in properties
 
 
 def test_tool_executor_filters_handlers_from_config(monkeypatch) -> None:

@@ -236,6 +236,16 @@ def load_test_cases(
             source_filter=source_filter,
             subset_file=subset_file,
         )
+    if benchmark_source == "xl-docbench":
+        from .xl_docbench import load_xl_docbench_cases
+
+        return load_xl_docbench_cases(
+            limit=limit,
+            question_filter=question_filter,
+            source_filter=source_filter,
+            subset_file=subset_file,
+            benchmark_config=benchmark_config,
+        )
 
     logger.error("Unsupported benchmark source: %s", benchmark_source)
     return []

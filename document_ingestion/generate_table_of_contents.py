@@ -233,7 +233,7 @@ class DocumentTOCParser:
         )
         pipeline_options.do_ocr = True
         pipeline_options.ocr_options = TesseractCliOcrOptions(
-            force_full_page_ocr=True, lang=["eng"]
+            force_full_page_ocr=False
         )
 
         artifacts_path = os.environ.get("DOCLING_ARTIFACTS_PATH")

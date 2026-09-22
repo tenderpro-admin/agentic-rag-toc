@@ -15,7 +15,7 @@ def _build_tool_context(
 ) -> ToolContext:
     return ToolContext(
         document_store=None,
-        embedder=None,
+        embedding_runtime=None,
         standalone_retriever=None,
         keyword_retriever=None,
         current_source_paths=set(),
